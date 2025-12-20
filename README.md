@@ -1,6 +1,7 @@
 # HA-First Cluster Platform (from scratch)
 
 ## 🎯 Objectif du projet
+
 Ce projet vise à construire from scratch une plateforme de type cluster HA, où la continuité de service est une propriété fondamentale du système.
 
 L’objectif est de permettre :
@@ -13,6 +14,7 @@ L’objectif est de permettre :
 La plateforme est pensée comme un socle générique, indépendant d’une application particulière.
 
 ## 🧠 Positionnement technique (choix assumés)
+
 ### Approche
 
 - Implémentation from scratch (pas Kubernetes, pas Swarm).
@@ -32,6 +34,7 @@ La plateforme est pensée comme un socle générique, indépendant d’une appli
 - se concentrer sur le HA des workloads, pas encore sur le HA des données.
 
 ## 🏗️ Architecture globale
+
 ### 1. Control Plane (HA)
 
 Le cluster repose sur un plan de contrôle chargé de :
@@ -124,6 +127,7 @@ Phase II (future) :
 - L’objectif est la stabilité fonctionnelle, pas la perfection théorique
 
 ## 🛣️ Roadmap simplifiée
+
 ### Phase I — Fondation
 
 - cluster from scratch
