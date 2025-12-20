@@ -1,171 +1,213 @@
-# HA-First Cluster Platform (from scratch)
+# HA-First Multi-Site Platform (from scratch)
 
-## 🎯 Objectif du projet
+## Objectif
 
-Ce projet vise à construire from scratch une plateforme de type cluster HA, où la continuité de service est une propriété fondamentale du système.
+Construire **from scratch** une plateforme “HA-first” pensée pour fonctionner sur **plusieurs sites** (Dijon, Thory, puis autant que nécessaire), où :
 
-L’objectif est de permettre :
+- un service peut avoir plusieurs backends (replicas) répartis sur différents sites,
+- si une machine ou un site tombe, le trafic bascule automatiquement,
+- l’état “plateforme” (inventaire, routage, santé) est conservé (dans les limites de la Phase I),
+- le client continue d’accéder aux services via un endpoint unique (ex: `acecinema.fr`).
 
-- l’exécution de workloads sur plusieurs machines,
-- la reprise automatique en cas de panne,
-- la conservation de l’état applicatif,
-- une coupure client nulle ou minimale.
+Le projet reste **100% Docker**.
 
-La plateforme est pensée comme un socle générique, indépendant d’une application particulière.
+> Phase I : les backends sont créés **manuellement** via Portainer.  
+> Phase II : déploiement automatique par la plateforme (orchestrateur).
 
-## 🧠 Positionnement technique (choix assumés)
+---
 
-### Approche
+## Infra actuelle (topologie)
 
-- Implémentation from scratch (pas Kubernetes, pas Swarm).
-- Architecture inspirée des systèmes distribués modernes (orchestrateurs, schedulers, control plane).
-- Priorité à la compréhension, la maîtrise et l’évolutivité.
+### Entrée publique
 
-### Choix volontairement simplifié (Phase I)
+`acecinema.fr` → **VPS OVH** → **Caddy** → **WireGuard hub** → **sites**
 
-- Une base de données centrale
-- Accessible via un seul point logique
-- Non redondée pour l’instant
+### Réseau inter-sites (Hub & Spoke)
 
-👉 Ce choix est conscient et temporaire, afin de :
+- Le VPS héberge un **serveur WireGuard** (hub).
+- Chaque site (spoke) se connecte au hub : Dijon, Thory, futurs sites…
+- Le VPS est le point central de routage entre sites.
 
-- réduire la complexité initiale,
-- accélérer le développement du cœur du cluster,
-- se concentrer sur le HA des workloads, pas encore sur le HA des données.
+Objectif design : supporter **N sites** (ajouter un site = configuration + déclaration, pas refonte).
 
-## 🏗️ Architecture globale
+---
 
-### 1. Control Plane (HA)
+## Concepts
 
-Le cluster repose sur un plan de contrôle chargé de :
+### Site
 
-- maintenir l’état global du cluster,
-- connaître les nœuds disponibles,
-- décider où lancer les workloads,
-- détecter les pannes.
+Un “site” = un groupe de machines Docker derrière un LAN, connecté au hub WireGuard.
 
-Caractéristiques :
+Exemples :
 
-- plusieurs instances possibles
-- consensus / quorum prévu
-- aucune instance unique critique à terme
+- `site-dijon` (2 PVE)
+- `site-thory` (swarm existant, ou un pool Docker dédié)
 
-### 2. Workers
+Le design doit être multi-sites dès le départ.
 
-Les workers sont des machines d’exécution :
+### Service
 
-- ils reçoivent des ordres du control plane,
-- exécutent les workloads (conteneurs/process),
-- remontent leur état (heartbeat, santé, charge).
+Un “service” = un endpoint stable exposé au client (ex: `api.acecinema.fr`, `stream.acecinema.fr`), routé vers un pool de backends.
 
-Un worker peut tomber sans interrompre le service global.
+### Backend
 
-### 3. Base de données (Phase I)
+Un “backend” = une instance exécutable (conteneur/stack) d’un service, joignable via :
 
-La base de données est utilisée pour :
+- une IP WireGuard (ou IP routée via WG)
+- un port
+- un endpoint de healthcheck (HTTP recommandé)
 
--  l’état du cluster (métadonnées),
-- l’état applicatif (config, sessions, jobs, etc.).
+---
 
-Caractéristiques actuelles :
+## Phase I (actuelle) : HA réseau + backends manuels
 
-- un seul endpoint
-- pas de réplication
-- SPOF assumé
+### Ce qui est HA dès maintenant
 
-Limitation connue :
+- **Endpoint public unique** : c’est toujours le VPS/Caddy qui reçoit le trafic.
+- **Failover automatique** : Caddy retire les backends HS via healthchecks.
+- **Multi-sites** : un service peut avoir des backends à Dijon + Thory + autres.
 
-```
-Si la base tombe, le cluster ne peut plus évoluer,
-mais les workloads déjà lancés peuvent continuer à tourner.
-```
-La redondance de la base est explicitement reportée à une phase ultérieure.
+### Ce qui est manuel (pour l’instant)
 
-### 🔁 Gestion du cycle de vie des workloads
+- Les backends (conteneurs/stacks) sont **créés manuellement** dans Portainer sur chaque site.
+- La plateforme se limite à :
+  1) enregistrer/déclarer les backends,
+  2) vérifier leur santé,
+  3) synchroniser la configuration de routage vers Caddy.
 
-Le système fonctionne par intention :
+---
 
-- l’utilisateur définit un desired state
-- le cluster s’assure que l’état réel converge vers cet objectif
-- toute divergence (panne, crash, perte de nœud) déclenche une correction automatique
+## Base de données (Phase I)
 
-### 🌐 Routage et continuité client
+Une base centrale (SPOF assumé) stocke :
 
-- Les clients se connectent à un endpoint stable
-- Le routage interne est dynamique
-- Les instances défaillantes sont retirées automatiquement
+- inventaire des sites,
+- définition des services (domaines, règles),
+- liste des backends (addr/port/tags),
+- état de santé (dernière vue, statut, métriques simples),
+- configuration générée (ou versionnée) pour le LB.
 
-Objectif :
+**Important :** la redondance de la DB est repoussée à plus tard (Phase II).
 
-- aucune configuration client à modifier
-- reconnexion éventuelle, mais rapide et transparente
+Conséquence :
 
-### 📦 Gestion de l’état applicatif
+- si la DB tombe, les backends déjà lancés peuvent continuer,
+- mais la plateforme ne peut plus *adapter* le routage/placement automatiquement.
 
-Principe clé :
+---
 
-- Aucun état critique ne doit être stocké localement sur un worker
+## Routage & Load Balancing (Caddy sur VPS)
 
-Phase I :
+### Rôle du VPS
 
-- état centralisé en base unique
-- accès contrôlé par le cluster
+Le VPS est :
 
-Phase II (future) :
+- **edge gateway** (TLS, domaines, headers, rate-limit éventuel),
+- **load balancer global** (répartition + failover),
+- **point de routage inter-sites** (via WireGuard hub).
 
-- réplication
-- leader election
-- bascule automatique
-- suppression du SPOF base de données
+### Principe
 
-### 🚧 Limites actuelles (connues et acceptées)
+Pour chaque service public, Caddy a une liste d’upstreams :
 
-- La base de données est un point unique de défaillance
-- Le projet ne vise pas encore :
-  - le multi-DC
-  - la tolérance totale aux partitions réseau
-- L’objectif est la stabilité fonctionnelle, pas la perfection théorique
+- `10.200.x.y:port` (IP WireGuard d’un backend)
+- répartis sur plusieurs sites
 
-## 🛣️ Roadmap simplifiée
+Caddy assure :
 
-### Phase I — Fondation
+- healthchecks réguliers
+- suppression automatique des backends HS
+- réintégration quand ils reviennent
 
-- cluster from scratch
-- control plane fonctionnel
-- workers + scheduling
-- base centrale unique
-- HA des workloads
+Objectif : si un site tombe, le trafic repart vers les sites restants.
 
-### Phase II — Robustesse
+---
 
-- réplication de la base
-- leader election DB
-- tolérance aux pannes de données
-- réduction drastique du SPOF
+## Déclaration d’un backend (Phase I)
 
-### Phase III — Maturité
+### Étape 1 — Déployer le backend (manuel)
 
-- rolling updates
-- autoscaling
-- observabilité avancée
-- politiques HA par défaut
+Créer une stack/containeur dans Portainer sur le site concerné.
 
-### 🧪 Critère de réussite Phase I
+Exigences minimales :
 
-Le projet est considéré valide si :
+- backend accessible depuis le VPS via l’IP WireGuard (ou route WG)
+- port clairement exposé/routé
+- endpoint de healthcheck (HTTP recommandé)
 
-- un service tourne sur plusieurs workers
-- un worker est coupé brutalement
-- le service est relancé ailleurs automatiquement
-- le client continue à accéder au service
-- l’état applicatif est conservé (tant que la DB est disponible)
+### Étape 2 — Enregistrer le backend côté plateforme
 
-### 🧩 Vision
+Ajouter une entrée (API/DB/YAML) du type :
 
-Ce projet n’essaie pas de battre les solutions existantes.
-Il vise à comprendre, maîtriser et reconstruire les fondations d’un système HA moderne.
+- `service = api`
+- `site = dijon`
+- `addr = 10.200.0.23`
+- `port = 8080`
+- `health = http://10.200.0.23:8080/health`
 
-```
-La haute disponibilité n’est pas un add-on.
-C’est une propriété structurelle du système.
-```
+### Étape 3 — Propagation vers Caddy
+
+Un composant “config-sync” :
+
+- génère la config Caddy (ou un fragment)
+- recharge Caddy sans downtime
+- maintient un pool d’upstreams par service
+
+---
+
+## Définition de “coupure minimale”
+
+- En HTTP : une requête peut échouer pile au moment où un backend meurt, mais les suivantes repartent vers un backend sain.
+- En connexions longues (WebSocket/streaming) : reconnexion possible selon l’application ; la plateforme vise à la rendre rapide mais ne peut pas rendre une connexion “immortelle”.
+
+---
+
+## Limites Phase I (acceptées)
+
+- DB centrale non redondée (SPOF)
+- backends déclarés manuellement (Portainer)
+- pas encore d’orchestrateur/scheduler automatique
+- stateful avancé (volumes distribués, DB HA, leader election) repoussé
+
+---
+
+## Phase II (future) : automatisation + vraie tolérance aux pannes
+
+Objectifs :
+
+- découverte/inscription automatique des sites
+- agent léger par site (reporting, auto-register)
+- déploiement automatique (Docker API / Portainer API)
+- placement (scheduler) + auto-healing (reschedule)
+- gestion du stateful : stockage distribué + DB HA + election
+
+---
+
+## Roadmap courte
+
+### MVP 0 (maintenant)
+
+- Modèle de données : sites / services / backends
+- Healthchecker
+- Génération config Caddy + reload
+- Multi-sites fonctionnel
+
+### MVP 1
+
+- API CRUD + auth token
+- Tags/weights (ex: Dijon prioritaire)
+- Observabilité (logs/metrics)
+
+### MVP 2
+
+- Agent par site
+- Début de déploiement automatique (Portainer/Docker API)
+
+---
+
+## Critère de réussite Phase I
+
+- Un service a au moins 2 backends sur 2 sites différents
+- Tu coupes un site complet (VPN down, WAN down, machines off)
+- Le service reste joignable via le domaine public
+- Caddy bascule automatiquement vers le(s) site(s) restant(s)
