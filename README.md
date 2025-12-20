@@ -72,7 +72,8 @@ Caractéristiques actuelles :
 
 Limitation connue :
 
-```Si la base tombe, le cluster ne peut plus évoluer,
+```
+Si la base tombe, le cluster ne peut plus évoluer,
 mais les workloads déjà lancés peuvent continuer à tourner.
 ```
 La redondance de la base est explicitement reportée à une phase ultérieure.
@@ -117,13 +118,9 @@ Phase II (future) :
 ### 🚧 Limites actuelles (connues et acceptées)
 
 - La base de données est un point unique de défaillance
-
 - Le projet ne vise pas encore :
-
   - le multi-DC
-
   - la tolérance totale aux partitions réseau
-
 - L’objectif est la stabilité fonctionnelle, pas la perfection théorique
 
 ## 🛣️ Roadmap simplifiée
@@ -149,7 +146,7 @@ Phase II (future) :
 - observabilité avancée
 - politiques HA par défaut
 
-###🧪 Critère de réussite Phase I
+### 🧪 Critère de réussite Phase I
 
 Le projet est considéré valide si :
 
@@ -159,10 +156,12 @@ Le projet est considéré valide si :
 - le client continue à accéder au service
 - l’état applicatif est conservé (tant que la DB est disponible)
 
-###🧩 Vision
+### 🧩 Vision
 
 Ce projet n’essaie pas de battre les solutions existantes.
 Il vise à comprendre, maîtriser et reconstruire les fondations d’un système HA moderne.
 
-```La haute disponibilité n’est pas un add-on.
-C’est une propriété structurelle du système.```
+```
+La haute disponibilité n’est pas un add-on.
+C’est une propriété structurelle du système.
+```
