@@ -5,12 +5,8 @@ Ce projet vise à construire from scratch une plateforme de type cluster HA, où
 
 L’objectif est de permettre :
 
-l’exécution de workloads sur plusieurs machines,
-
-la reprise automatique en cas de panne,
-
-la conservation de l’état applicatif,
-
-une coupure client nulle ou minimale.
-
-La plateforme est pensée comme un socle générique, indépendant d’une application particulière.
+- l’exécution de workloads sur plusieurs machines,
+- la reprise automatique en cas de panne,
+- la conservation de l’état applicatif,
+- une coupure client nulle ou minimale.
+- La plateforme est pensée comme un socle générique, indépendant d’une application particulière.
