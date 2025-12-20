@@ -1,0 +1,26 @@
+# Example Caddyfile fragment for service "api" (Phase I, statique)
+api.acecinema.fr {
+  encode gzip
+  log
+  handle {
+    reverse_proxy {
+      lb_policy random_choose
+      lb_try_duration 30s
+      lb_try_interval 2s
+      health_uri /health
+      health_interval 10s
+      health_timeout 2s
+
+      upstream 10.200.0.23:8080 {
+        lb_weight 10    # Dijon prioritaire
+        max_fails 2
+        fail_duration 15s
+      }
+      upstream 10.200.1.45:8080 {
+        lb_weight 1     # Thory backup
+        max_fails 2
+        fail_duration 15s
+      }
+    }
+  }
+}

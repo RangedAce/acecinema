@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  app:
+    image: python:3.11-alpine
+    container_name: "${SERVICE_NAME:-service}-${SITE_NAME:-site}"
+    environment:
+      SITE_NAME: ${SITE_NAME:-site}
+      SERVICE_NAME: ${SERVICE_NAME:-service}
+      PUBLISHED_PORT: ${PUBLISHED_PORT:-8080}
+      TZ: ${TZ:-UTC}
+    command: >
+      sh -c "
+        apk add --no-cache wget >/dev/null &&
+        cat <<'PY' > /app.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+PORT = int(os.getenv('PUBLISHED_PORT','8080'))
+SITE = os.getenv('SITE_NAME','site')
+SERVICE = os.getenv('SERVICE_NAME','service')
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
+        else:
+            self.send_response(200); self.end_headers(); self.wfile.write(f'service={SERVICE} site={SITE}'.encode())
+    def log_message(self, fmt, *args): pass
+HTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+PY
+        python /app.py
+      "
+    ports:
+      - "${PUBLISHED_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "site=${SITE_NAME:-site}"
+      - "service=${SERVICE_NAME:-service}"

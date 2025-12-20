@@ -1,0 +1,148 @@
+openapi: 3.0.3
+info:
+  title: acecinema platform API
+  version: "0.1.0"
+  description: >
+    Phase I API for multi-site HA platform. CRUD for sites/services/backends,
+    read health, simple token auth via X-API-Token header.
+servers:
+  - url: http://localhost:8081
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Token
+  schemas:
+    Site:
+      type: object
+      required: [name, wg_endpoint]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        wg_endpoint: {type: string, description: "WireGuard IP or CIDR"}
+        priority: {type: integer, default: 0}
+        weight: {type: integer, default: 1}
+        created_at: {type: string, format: date-time}
+    Service:
+      type: object
+      required: [name, domains]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        domains:
+          type: array
+          items: {type: string}
+        created_at: {type: string, format: date-time}
+    Backend:
+      type: object
+      required: [service_id, site_id, host, port]
+      properties:
+        id: {type: string, format: uuid}
+        service_id: {type: string, format: uuid}
+        site_id: {type: string, format: uuid}
+        host: {type: string}
+        port: {type: integer}
+        health_path: {type: string, default: "/health"}
+        weight: {type: integer, default: 1}
+        priority: {type: integer, default: 0}
+        is_healthy: {type: boolean}
+        last_checked: {type: string, format: date-time}
+        meta: {type: object}
+    HealthEvent:
+      type: object
+      properties:
+        backend_id: {type: string, format: uuid}
+        status: {type: string}
+        latency_ms: {type: integer}
+        at: {type: string, format: date-time}
+        detail: {type: string}
+paths:
+  /sites:
+    get:
+      summary: List sites
+      responses:
+        "200": {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Site'}}}}}
+    post:
+      summary: Create site
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Site'}}}
+      responses:
+        "201": {description: Created}
+  /sites/{id}:
+    get:
+      summary: Get site
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Site'}}}}}
+    patch:
+      summary: Update site
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Site'}}}}
+      responses: {"200": {description: OK}}
+    delete:
+      summary: Delete site
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      responses: {"204": {description: Deleted}}
+  /services:
+    get:
+      summary: List services
+      responses:
+        "200": {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Service'}}}}}
+    post:
+      summary: Create service
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Service'}}}
+      responses: {"201": {description: Created}}
+  /services/{id}:
+    get:
+      summary: Get service
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Service'}}}}}
+    patch:
+      summary: Update service
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Service'}}}}
+      responses: {"200": {description: OK}}
+    delete:
+      summary: Delete service
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      responses: {"204": {description: Deleted}}
+  /backends:
+    get:
+      summary: List backends
+      responses:
+        "200": {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Backend'}}}}}
+    post:
+      summary: Create backend
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Backend'}}}
+      responses: {"201": {description: Created}}
+  /backends/{id}:
+    get:
+      summary: Get backend
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Backend'}}}}}
+    patch:
+      summary: Update backend
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Backend'}}}}
+      responses: {"200": {description: OK}}
+    delete:
+      summary: Delete backend
+      parameters: [{in: path, name: id, required: true, schema: {type: string, format: uuid}}]
+      responses: {"204": {description: Deleted}}
+  /health/backends:
+    get:
+      summary: List backends with health
+      responses:
+        "200": {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Backend'}}}}}
+  /health/summary:
+    get:
+      summary: Global status (per service)
+      responses:
+        "200": {description: OK}
