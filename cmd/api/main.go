@@ -66,21 +66,35 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 
-	session, err := connectScylla(cfg)
-	if err != nil {
-		log.Fatalf("scylla connect: %v", err)
+	var session *gocql.Session
+	for i := 0; i < 20; i++ {
+		s, err := connectScylla(cfg)
+		if err != nil {
+			log.Printf("scylla connect retry %d/20: %v", i+1, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if err := db.EnsureSchema(s, cfg.Keyspace); err != nil {
+			s.Close()
+			log.Printf("ensure schema retry %d/20: %v", i+1, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if cfg.AdminEmail != "" && cfg.AdminPass != "" {
+			if err := db.EnsureAdmin(context.Background(), s, cfg.Keyspace, cfg.AdminEmail, cfg.AdminPass); err != nil {
+				s.Close()
+				log.Printf("ensure admin retry %d/20: %v", i+1, err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		}
+		session = s
+		break
+	}
+	if session == nil {
+		log.Fatal("scylla not ready after retries")
 	}
 	defer session.Close()
-
-	if err := db.EnsureSchema(session, cfg.Keyspace); err != nil {
-		log.Fatalf("ensure schema: %v", err)
-	}
-
-	if cfg.AdminEmail != "" && cfg.AdminPass != "" {
-		if err := db.EnsureAdmin(context.Background(), session, cfg.Keyspace, cfg.AdminEmail, cfg.AdminPass); err != nil {
-			log.Fatalf("ensure admin: %v", err)
-		}
-	}
 
 	authSvc := auth.NewService(cfg.AppSecret)
 	mediaSvc := media.NewService(session, cfg.Keyspace, cfg.MediaRoot)
@@ -92,7 +106,6 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-
 	r.Get("/", serveUI)
 	r.Post("/auth/login", handleLogin(session, authSvc, cfg))
 	r.Post("/auth/refresh", handleRefresh(authSvc))
@@ -113,7 +126,7 @@ func main() {
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
 
 	r.With(authSvc.RequireRole("admin")).Post("/scan", func(w http.ResponseWriter, r *http.Request) {
-		go mediaSvc.Scan(context.Background()) // fire and forget
+		go mediaSvc.Scan(context.Background())
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "scan started"})
 	})
 
@@ -132,14 +145,12 @@ func connectScylla(cfg config) (*gocql.Session, error) {
 	cluster.Timeout = 5 * time.Second
 	cluster.Consistency = parseConsistency(cfg.Consistency)
 
-	// connect without keyspace to ensure it exists
 	tmpSession, err := cluster.CreateSession()
 	if err != nil {
 		return nil, err
 	}
 	defer tmpSession.Close()
 
-	// retry loop for keyspace creation (in case cluster not fully ready)
 	created := false
 	for i := 0; i < 10; i++ {
 		if err := db.EnsureKeyspace(tmpSession, cfg.Keyspace, cfg.Replication); err != nil {
@@ -179,21 +190,6 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func parseConsistency(c string) gocql.Consistency {
-	switch strings.ToUpper(c) {
-	case "ONE":
-		return gocql.One
-	case "LOCAL_ONE":
-		return gocql.LocalOne
-	case "LOCAL_QUORUM":
-		return gocql.LocalQuorum
-	case "ALL":
-		return gocql.All
-	default:
-		return gocql.Quorum
-	}
 }
 
 func errorJSON(w http.ResponseWriter, status int, msg string) {
@@ -373,6 +369,21 @@ func handleStream(svc *media.Service, mediaRoot string) http.HandlerFunc {
 	}
 }
 
+func parseConsistency(c string) gocql.Consistency {
+	switch strings.ToUpper(c) {
+	case "ONE":
+		return gocql.One
+	case "LOCAL_ONE":
+		return gocql.LocalOne
+	case "LOCAL_QUORUM":
+		return gocql.LocalQuorum
+	case "ALL":
+		return gocql.All
+	default:
+		return gocql.Quorum
+	}
+}
+
 func serveUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `<!doctype html>
@@ -391,11 +402,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   <div id="auth">
     <input id="email" placeholder="email" value="admin@example.com"/>
     <input id="password" placeholder="password" type="password" value="changeme-admin"/>
-    <button onclick="login()">Login</button>
-    <button onclick="refresh()">Refresh token</button>
+    <button id="loginBtn">Login</button>
+    <button id="refreshBtn">Refresh token</button>
   </div>
   <div>
-    <button onclick="loadMedia()">Charger les médias</button>
+    <button id="loadBtn">Charger les medias</button>
   </div>
   <div id="media"></div>
 <script>
@@ -418,7 +429,13 @@ async function loadMedia() {
   (list||[]).forEach(m=>{
     const el=document.createElement('div');
     el.className='card';
-    el.innerHTML='<strong>'+m.title+'</strong> ('+(m.year||'')+') - '+m.type+' <button onclick=\"play(\\''+m.id+'\\')\">Play</button>';
+    const title=document.createElement('div');
+    title.innerHTML='<strong>'+m.title+'</strong> ('+(m.year||'')+') - '+m.type;
+    const btn=document.createElement('button');
+    btn.textContent='Play';
+    btn.addEventListener('click',()=>play(m.id));
+    el.appendChild(title);
+    el.appendChild(btn);
     div.appendChild(el);
   });
 }
@@ -428,6 +445,9 @@ async function play(id){
   const url='/stream?path='+encodeURIComponent(assets[0].path);
   window.open(url,'_blank');
 }
+document.getElementById('loginBtn').addEventListener('click', login);
+document.getElementById('refreshBtn').addEventListener('click', refresh);
+document.getElementById('loadBtn').addEventListener('click', loadMedia);
 </script>
 </body>
 </html>`)
