@@ -1,46 +1,53 @@
 version: "3.9"
 
+x-acecinema-image: &acecinema-image
+  image: rangedace/acecinema:latest
+
 services:
   db:
-    image: postgres:15
+    <<: *acecinema-image
     container_name: acecinema-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ace
-      POSTGRES_PASSWORD: acepass
-      POSTGRES_DB: aceplat
-      TZ: Europe/Paris
+      ROLE: db-primary
+      NODE_NAME: db1
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      REPL_USER: repl
+      REPL_PASSWORD: replpass
     volumes:
-      - /opt/docker/acecinema/db/data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ace"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  api:
-    build:
-      context: ../api
-    container_name: acecinema-api
+  app:
+    <<: *acecinema-image
+    container_name: acecinema-app
     restart: unless-stopped
     environment:
-      DB_URL: postgres://ace:acepass@db:5432/aceplat?sslmode=disable
-      API_TOKEN: changeme-token
-      PORT: "8081"
+      ROLE: app
+      NODE_NAME: app1
+      APP_PORT: 8080
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      APP_SECRET: change-me
     depends_on:
       - db
     ports:
-      - "8081:8081"
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-  health-checker:
-    build:
-      context: ../health-checker
-    container_name: acecinema-health-checker
-    restart: unless-stopped
-    environment:
-      DB_URL: postgres://ace:acepass@db:5432/aceplat?sslmode=disable
-      CHECK_INTERVAL: 10s
-      CHECK_TIMEOUT: 2s
-      CONCURRENCY: 16
-    depends_on:
-      - db
+volumes:
+  db-data: {}

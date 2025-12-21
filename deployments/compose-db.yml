@@ -1,0 +1,91 @@
+version: "3.9"
+
+x-acecinema-image: &acecinema-image
+  image: rangedace/acecinema:latest
+
+services:
+  db1:
+    <<: *acecinema-image
+    environment:
+      ROLE: db-primary
+      NODE_NAME: db1
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      REPL_USER: repl
+      REPL_PASSWORD: replpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - db1-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - acecinema
+
+  db2:
+    <<: *acecinema-image
+    environment:
+      ROLE: db-replica
+      NODE_NAME: db2
+      MASTER_HOST: db1
+      MASTER_PORT: 5432
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      REPL_USER: repl
+      REPL_PASSWORD: replpass
+    depends_on:
+      - db1
+    ports:
+      - "5433:5432"
+    volumes:
+      - db2-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - acecinema
+
+  db3:
+    <<: *acecinema-image
+    environment:
+      ROLE: db-replica
+      NODE_NAME: db3
+      MASTER_HOST: db1
+      MASTER_PORT: 5432
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      REPL_USER: repl
+      REPL_PASSWORD: replpass
+    depends_on:
+      - db1
+    ports:
+      - "5434:5432"
+    volumes:
+      - db3-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - acecinema
+
+volumes:
+  db1-data: {}
+  db2-data: {}
+  db3-data: {}
+
+networks:
+  acecinema:
+    name: acecinema-net

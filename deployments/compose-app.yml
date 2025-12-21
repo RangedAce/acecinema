@@ -1,0 +1,75 @@
+version: "3.9"
+
+x-acecinema-image: &acecinema-image
+  image: rangedace/acecinema:latest
+
+services:
+  app1:
+    <<: *acecinema-image
+    environment:
+      ROLE: app
+      NODE_NAME: app1
+      APP_PORT: 8080
+      DB_HOST: db1
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      APP_SECRET: change-me-app1
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - acecinema
+
+  app2:
+    <<: *acecinema-image
+    environment:
+      ROLE: app
+      NODE_NAME: app2
+      APP_PORT: 8080
+      DB_HOST: db1
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      APP_SECRET: change-me-app2
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - acecinema
+
+  app3:
+    <<: *acecinema-image
+    environment:
+      ROLE: app
+      NODE_NAME: app3
+      APP_PORT: 8080
+      DB_HOST: db1
+      DB_PORT: 5432
+      DB_USER: ace
+      DB_PASSWORD: acepass
+      DB_NAME: acecinema
+      APP_SECRET: change-me-app3
+    ports:
+      - "8083:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - acecinema
+
+networks:
+  acecinema:
+    name: acecinema-net
