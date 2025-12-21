@@ -8,7 +8,7 @@ services:
     <<: *acecinema-image
     container_name: acecinema-app1
     environment:
-      ROLE: app
+      ROLE: api
       NODE_NAME: app1
       APP_PORT: 8080
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
@@ -16,7 +16,10 @@ services:
       SCYLLA_KEYSPACE: acecinema
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
-      APP_SECRET: change-me-app1
+      APP_SECRET: change-me
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: changeme-admin
+      MEDIA_ROOT: /mnt/media
     ports:
       - "8081:8080"
     healthcheck:
@@ -26,12 +29,14 @@ services:
       retries: 3
     networks:
       - acecinema
+    volumes:
+      - media:/mnt/media:ro
 
   app2:
     <<: *acecinema-image
     container_name: acecinema-app2
     environment:
-      ROLE: app
+      ROLE: api
       NODE_NAME: app2
       APP_PORT: 8080
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
@@ -39,7 +44,10 @@ services:
       SCYLLA_KEYSPACE: acecinema
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
-      APP_SECRET: change-me-app2
+      APP_SECRET: change-me
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: changeme-admin
+      MEDIA_ROOT: /mnt/media
     ports:
       - "8082:8080"
     healthcheck:
@@ -49,12 +57,14 @@ services:
       retries: 3
     networks:
       - acecinema
+    volumes:
+      - media:/mnt/media:ro
 
   app3:
     <<: *acecinema-image
     container_name: acecinema-app3
     environment:
-      ROLE: app
+      ROLE: api
       NODE_NAME: app3
       APP_PORT: 8080
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
@@ -62,7 +72,10 @@ services:
       SCYLLA_KEYSPACE: acecinema
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
-      APP_SECRET: change-me-app3
+      APP_SECRET: change-me
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: changeme-admin
+      MEDIA_ROOT: /mnt/media
     ports:
       - "8083:8080"
     healthcheck:
@@ -72,7 +85,29 @@ services:
       retries: 3
     networks:
       - acecinema
+    volumes:
+      - media:/mnt/media:ro
+
+  scanner:
+    <<: *acecinema-image
+    container_name: acecinema-scanner
+    environment:
+      ROLE: scanner
+      NODE_NAME: scanner
+      SCYLLA_HOSTS: scylla1,scylla2,scylla3
+      SCYLLA_PORT: 9042
+      SCYLLA_KEYSPACE: acecinema
+      MEDIA_ROOT: /mnt/media
+    depends_on:
+      - app1
+    networks:
+      - acecinema
+    volumes:
+      - media:/mnt/media:ro
 
 networks:
   acecinema:
     name: acecinema-net
+
+volumes:
+  media: {}
