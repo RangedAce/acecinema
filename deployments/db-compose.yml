@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    container_name: acecinema-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ace
+      POSTGRES_PASSWORD: acepass
+      POSTGRES_DB: aceplat
+      TZ: Europe/Paris
+    volumes:
+      - /opt/docker/acecinema/db/data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"   # limiter via firewall/WG si nécessaire
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

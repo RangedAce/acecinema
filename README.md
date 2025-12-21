@@ -17,8 +17,8 @@ Objectif: exposer des services publics via Caddy sur le VPS OVH, avec backends r
 4) Tester la connectivité: `ping 10.200.0.1` (hub) depuis le site et `ping 10.200.N.2` depuis le hub.
 
 ## Déployer un backend (Portainer, manuel)
-1) Sur le site cible, créer une stack Portainer avec le template générique `docs/examples/backend-stack.yml`.
-2) Renseigner les variables:
+1) Sur le site cible, placer le compose dans `/opt/docker/acecinema/<service>/docker-compose.yml` (ex: `/opt/docker/acecinema/api/docker-compose.yml`), ou coller le contenu dans Portainer. Template générique: `docs/examples/backend-stack.yml`.
+2) Ajuster directement dans le YAML (pas de `.env`):
    - `SITE_NAME` (ex: dijon)
    - `SERVICE_NAME` (ex: api)
    - `PUBLISHED_PORT` (ex: 8080)
@@ -73,8 +73,9 @@ api.acecinema.fr {
 4) Remettre le backend/site → Caddy le réintègre après healthcheck OK.
 
 ## Fichiers utiles
-- Template stack backend (Portainer): `docs/examples/backend-stack.yml`
+- Template stack backend (Portainer): `docs/examples/backend-stack.yml` (copier dans `/opt/docker/acecinema/<service>/docker-compose.yml` si vous déployez en CLI).
 - Exemple Caddy pour `api`: `docs/examples/caddy/Caddyfile.api.example`
+- Compose Postgres (Phase I, SPOF): `deployments/db-compose.yml` (à placer typiquement dans `/opt/docker/acecinema/db/docker-compose.yml`).
 
 ## Hors scope Phase I
 - Pas de génération automatique de Caddyfile (édition manuelle uniquement).
