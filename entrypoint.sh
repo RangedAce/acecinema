@@ -83,14 +83,15 @@ DO \$\$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}') THEN
     CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='${DB_NAME}') THEN
-    CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};
-  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${REPL_USER}') THEN
     CREATE ROLE ${REPL_USER} REPLICATION LOGIN PASSWORD '${REPL_PASSWORD}';
   END IF;
 END \$\$;
 SQL
+    # CREATE DATABASE must be outside DO; create if missing
+    if [[ -z "$(run_as_postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")" ]]; then
+      run_as_postgres createdb -O "${DB_USER}" "${DB_NAME}"
+    fi
     run_as_postgres pg_ctl -D "$PGDATA" -m fast -w stop
   else
     write_conf
