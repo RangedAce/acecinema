@@ -10,6 +10,7 @@ import (
 
 	"github.com/gocql/gocql"
 
+	"acecinema/internal/db"
 	"acecinema/internal/media"
 )
 
@@ -21,12 +22,43 @@ func main() {
 	keyspace := env("SCYLLA_KEYSPACE", "acecinema")
 	cluster := gocql.NewCluster(hosts...)
 	cluster.Port = envInt("SCYLLA_PORT", 9042)
-	cluster.Keyspace = keyspace
 	cluster.Timeout = 5 * time.Second
 	cluster.Consistency = gocql.Quorum
-	session, err := cluster.CreateSession()
-	if err != nil {
-		log.Fatalf("scylla connect: %v", err)
+
+	var session *gocql.Session
+
+	// first connect without keyspace to ensure it exists
+	for i := 0; i < 10; i++ {
+		s, err := cluster.CreateSession()
+		if err == nil {
+			session = s
+			break
+		}
+		log.Printf("scylla connect retry %d/10: %v", i+1, err)
+		time.Sleep(3 * time.Second)
+	}
+	if session == nil {
+		log.Fatalf("scylla connect: giving up")
+	}
+	if err := db.EnsureKeyspace(session, keyspace, 3); err != nil {
+		session.Close()
+		log.Fatalf("ensure keyspace: %v", err)
+	}
+	session.Close()
+
+	// reconnect with keyspace
+	cluster.Keyspace = keyspace
+	for i := 0; i < 10; i++ {
+		s, err := cluster.CreateSession()
+		if err == nil {
+			session = s
+			break
+		}
+		log.Printf("scylla connect (with keyspace) retry %d/10: %v", i+1, err)
+		time.Sleep(3 * time.Second)
+	}
+	if session == nil {
+		log.Fatalf("scylla connect with keyspace: giving up")
 	}
 	defer session.Close()
 

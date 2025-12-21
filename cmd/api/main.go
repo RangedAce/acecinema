@@ -120,9 +120,32 @@ func main() {
 func connectScylla(cfg config) (*gocql.Session, error) {
 	cluster := gocql.NewCluster(cfg.ScyllaHosts...)
 	cluster.Port = cfg.ScyllaPort
-	cluster.Keyspace = cfg.Keyspace
 	cluster.Timeout = 5 * time.Second
 	cluster.Consistency = gocql.Quorum
+
+	// connect without keyspace to ensure it exists
+	tmpSession, err := cluster.CreateSession()
+	if err != nil {
+		return nil, err
+	}
+	defer tmpSession.Close()
+
+	// retry loop for keyspace creation (in case cluster not fully ready)
+	created := false
+	for i := 0; i < 10; i++ {
+		if err := db.EnsureKeyspace(tmpSession, cfg.Keyspace, 3); err != nil {
+			log.Printf("ensure keyspace retry %d/10: %v", i+1, err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		created = true
+		break
+	}
+	if !created {
+		return nil, fmt.Errorf("unable to ensure keyspace %s", cfg.Keyspace)
+	}
+
+	cluster.Keyspace = cfg.Keyspace
 	return cluster.CreateSession()
 }
 

@@ -72,6 +72,14 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 	return nil
 }
 
+func EnsureKeyspace(session *gocql.Session, keyspace string, replicationFactor int) error {
+	if replicationFactor <= 0 {
+		replicationFactor = 3
+	}
+	stmt := fmt.Sprintf("CREATE KEYSPACE IF NOT EXISTS %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': %d}", keyspace, replicationFactor)
+	return session.Query(stmt).Exec()
+}
+
 func EnsureAdmin(ctx context.Context, session *gocql.Session, keyspace, email, password string) error {
 	var existing string
 	err := session.Query(fmt.Sprintf("SELECT id FROM %s.users WHERE email=? LIMIT 1", keyspace), email).WithContext(ctx).Scan(&existing)
