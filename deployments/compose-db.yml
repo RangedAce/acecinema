@@ -6,6 +6,7 @@ x-acecinema-image: &acecinema-image
 services:
   db1:
     <<: *acecinema-image
+    container_name: acecinema-db1
     environment:
       ROLE: db-primary
       NODE_NAME: db1
@@ -29,6 +30,7 @@ services:
 
   db2:
     <<: *acecinema-image
+    container_name: acecinema-db2
     environment:
       ROLE: db-replica
       NODE_NAME: db2
@@ -56,6 +58,7 @@ services:
 
   db3:
     <<: *acecinema-image
+    container_name: acecinema-db3
     environment:
       ROLE: db-replica
       NODE_NAME: db3

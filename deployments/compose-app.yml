@@ -6,6 +6,7 @@ x-acecinema-image: &acecinema-image
 services:
   app1:
     <<: *acecinema-image
+    container_name: acecinema-app1
     environment:
       ROLE: app
       NODE_NAME: app1
@@ -28,6 +29,7 @@ services:
 
   app2:
     <<: *acecinema-image
+    container_name: acecinema-app2
     environment:
       ROLE: app
       NODE_NAME: app2
@@ -50,6 +52,7 @@ services:
 
   app3:
     <<: *acecinema-image
+    container_name: acecinema-app3
     environment:
       ROLE: app
       NODE_NAME: app3
