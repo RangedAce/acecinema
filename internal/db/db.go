@@ -50,6 +50,10 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 			format text,
 			PRIMARY KEY (media_id, id)
 		)`, keyspace),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.media_paths (
+			path text PRIMARY KEY,
+			media_id uuid
+		)`, keyspace),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.play_state (
 			user_id uuid,
 			media_id uuid,

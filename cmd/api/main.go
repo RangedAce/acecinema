@@ -404,6 +404,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     <input id="password" placeholder="password" type="password" value="changeme-admin"/>
     <button id="loginBtn">Login</button>
     <button id="refreshBtn">Refresh token</button>
+    <button id="logoutBtn">Logout</button>
   </div>
   <div>
     <button id="loadBtn">Charger les medias</button>
@@ -412,21 +413,31 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   <div id="token" style="margin-top:8px; font-family: monospace;"></div>
   <div id="media"></div>
 <script>
-let access='';
+let access = localStorage.getItem('access_token') || '';
+let refreshToken = localStorage.getItem('refresh_token') || '';
+document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
 async function login() {
   const res = await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});
   const data = await res.json();
   access = data.access_token||'';
+  refreshToken = data.refresh_token||'';
+  localStorage.setItem('access_token', access);
+  localStorage.setItem('refresh_token', refreshToken);
   document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
   alert('login ' + (res.ok?'ok':'ko'));
 }
 async function refresh() {
-  const rt = prompt('refresh token?');
-  const res = await fetch('/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:rt})});
+  if (!refreshToken) { alert('no refresh token'); return; }
+  const res = await fetch('/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});
   const data = await res.json(); access=data.access_token||''; alert('refresh ' + (res.ok?'ok':'ko'));
+  if (access) {
+    localStorage.setItem('access_token', access);
+    document.getElementById('token').textContent = 'Token: ' + access;
+  }
 }
 async function loadMedia() {
   const res = await fetch('/media',{headers:{Authorization:'Bearer '+access}});
+  if (!res.ok) { alert('load failed'); return; }
   const list = await res.json();
   const div = document.getElementById('media'); div.innerHTML='';
   (list||[]).forEach(m=>{
@@ -452,8 +463,16 @@ async function scanNow(){
   const res = await fetch('/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
   alert('scan ' + (res.ok?'started':'failed'));
 }
+function logout(){
+  access = '';
+  refreshToken = '';
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+  document.getElementById('token').textContent = 'Token: (empty)';
+}
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);
+document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('loadBtn').addEventListener('click', loadMedia);
 document.getElementById('scanBtn').addEventListener('click', scanNow);
 </script>
