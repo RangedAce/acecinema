@@ -20,7 +20,24 @@ log() {
 
 ensure_pgdata() {
   mkdir -p "$PGDATA"
+  chown -R postgres:postgres "$PGDATA"
   chmod 700 "$PGDATA"
+}
+
+run_as_postgres() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    gosu postgres "$@"
+  else
+    "$@"
+  fi
+}
+
+exec_as_postgres() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    exec gosu postgres "$@"
+  else
+    exec "$@"
+  fi
 }
 
 write_conf() {
@@ -55,13 +72,13 @@ init_primary() {
   ensure_pgdata
   if [[ ! -s "$PGDATA/PG_VERSION" ]]; then
     log "initializing primary database in $PGDATA"
-    initdb -D "$PGDATA" >/dev/null
+    run_as_postgres initdb -D "$PGDATA" >/dev/null
     write_conf
     write_hba
 
     log "bootstrapping roles and database (db_user=${DB_USER}, repl_user=${REPL_USER})"
-    pg_ctl -D "$PGDATA" -o "-c listen_addresses='*' -p ${DB_PORT}" -w start
-    psql --username=postgres -v ON_ERROR_STOP=1 <<SQL
+    run_as_postgres pg_ctl -D "$PGDATA" -o "-c listen_addresses='*' -p ${DB_PORT}" -w start
+    run_as_postgres psql --username=postgres -v ON_ERROR_STOP=1 <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}') THEN
     CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
@@ -74,13 +91,13 @@ DO \$\$ BEGIN
   END IF;
 END \$\$;
 SQL
-    pg_ctl -D "$PGDATA" -m fast -w stop
+    run_as_postgres pg_ctl -D "$PGDATA" -m fast -w stop
   else
     write_conf
     write_hba
   fi
   log "starting Postgres primary on port ${DB_PORT}"
-  exec postgres -D "$PGDATA" -p "${DB_PORT}"
+  exec_as_postgres postgres -D "$PGDATA" -p "${DB_PORT}"
 }
 
 init_replica() {
@@ -92,7 +109,7 @@ init_replica() {
   if [[ ! -s "$PGDATA/PG_VERSION" ]]; then
     log "performing basebackup from ${MASTER_HOST}:${MASTER_PORT} (slot=${REPLICATION_SLOT})"
     rm -rf "${PGDATA:?}/"*
-    PGPASSWORD="$REPL_PASSWORD" pg_basebackup -h "$MASTER_HOST" -p "$MASTER_PORT" -D "$PGDATA" -U "$REPL_USER" -Fp -Xs -R -C -S "$REPLICATION_SLOT"
+    PGPASSWORD="$REPL_PASSWORD" run_as_postgres pg_basebackup -h "$MASTER_HOST" -p "$MASTER_PORT" -D "$PGDATA" -U "$REPL_USER" -Fp -Xs -R -C -S "$REPLICATION_SLOT"
     write_conf
     write_hba
   else
@@ -100,7 +117,7 @@ init_replica() {
     write_hba
   fi
   log "starting Postgres replica on port ${DB_PORT} (master=${MASTER_HOST}:${MASTER_PORT})"
-  exec postgres -D "$PGDATA" -p "${DB_PORT}"
+  exec_as_postgres postgres -D "$PGDATA" -p "${DB_PORT}"
 }
 
 case "$ROLE" in
