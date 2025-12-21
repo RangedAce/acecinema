@@ -6,7 +6,7 @@ x-acecinema-image: &acecinema-image
 services:
   scylla:
     image: scylladb/scylla:5.4
-    container_name: acecinema-scylla
+    container_name: acecinema-scylla1
     command: >
       --smp 1 --memory 750M --overprovisioned 1
       --api-address 0.0.0.0
@@ -14,12 +14,60 @@ services:
       --broadcast-address scylla
       --rpc-address 0.0.0.0
       --broadcast-rpc-address scylla
-      --seeds scylla
+      --seeds scylla,scylla2,scylla3
     volumes:
-      - scylla-data:/var/lib/scylla
+      - scylla1-data:/var/lib/scylla
     ports:
       - "9042:9042"
       - "10000:10000"
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  scylla2:
+    image: scylladb/scylla:5.4
+    container_name: acecinema-scylla2
+    command: >
+      --smp 1 --memory 750M --overprovisioned 1
+      --api-address 0.0.0.0
+      --listen-address scylla2
+      --broadcast-address scylla2
+      --rpc-address 0.0.0.0
+      --broadcast-rpc-address scylla2
+      --seeds scylla,scylla2,scylla3
+    depends_on:
+      - scylla
+    volumes:
+      - scylla2-data:/var/lib/scylla
+    ports:
+      - "9142:9042"
+      - "11000:10000"
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  scylla3:
+    image: scylladb/scylla:5.4
+    container_name: acecinema-scylla3
+    command: >
+      --smp 1 --memory 750M --overprovisioned 1
+      --api-address 0.0.0.0
+      --listen-address scylla3
+      --broadcast-address scylla3
+      --rpc-address 0.0.0.0
+      --broadcast-rpc-address scylla3
+      --seeds scylla,scylla2,scylla3
+    depends_on:
+      - scylla
+    volumes:
+      - scylla3-data:/var/lib/scylla
+    ports:
+      - "9242:9042"
+      - "12000:10000"
     healthcheck:
       test: ["CMD-SHELL", "nodetool status > /dev/null"]
       interval: 15s
@@ -45,6 +93,8 @@ services:
       MEDIA_ROOT: /mnt/media
     depends_on:
       - scylla
+      - scylla2
+      - scylla3
     ports:
       - "8080:8080"
     healthcheck:
@@ -73,5 +123,7 @@ services:
       - media:/mnt/media:ro
 
 volumes:
-  scylla-data: {}
+  scylla1-data: {}
+  scylla2-data: {}
+  scylla3-data: {}
   media: {}
