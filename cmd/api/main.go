@@ -417,12 +417,18 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     <button id="loadBtn">Charger les medias</button>
     <button id="scanBtn">Scanner maintenant</button>
   </div>
+  <div id="status" style="margin-top:8px;"></div>
   <div id="token" style="margin-top:8px; font-family: monospace;"></div>
   <div id="media"></div>
 <script>
 let access = localStorage.getItem('access_token') || '';
 let refreshToken = localStorage.getItem('refresh_token') || '';
 document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
+const statusEl = document.getElementById('status');
+function setStatus(msg, isError) {
+  statusEl.textContent = msg;
+  statusEl.style.color = isError ? '#b00' : '#060';
+}
 async function login() {
   const res = await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});
   const data = await res.json();
@@ -431,24 +437,46 @@ async function login() {
   localStorage.setItem('access_token', access);
   localStorage.setItem('refresh_token', refreshToken);
   document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
-  alert('login ' + (res.ok?'ok':'ko'));
+  setStatus(res.ok ? 'Login OK' : 'Login failed', !res.ok);
+  if (res.ok) {
+    loadMedia();
+  }
 }
 async function refresh() {
-  if (!refreshToken) { alert('no refresh token'); return; }
+  if (!refreshToken) { setStatus('No refresh token', true); return; }
   const res = await fetch('/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});
-  const data = await res.json(); access=data.access_token||''; alert('refresh ' + (res.ok?'ok':'ko'));
+  const data = await res.json();
+  access = data.access_token||'';
+  refreshToken = data.refresh_token||refreshToken;
   if (access) {
     localStorage.setItem('access_token', access);
     document.getElementById('token').textContent = 'Token: ' + access;
   }
+  if (data.refresh_token) {
+    localStorage.setItem('refresh_token', data.refresh_token);
+  }
+  setStatus(res.ok ? 'Refresh OK' : 'Refresh failed', !res.ok);
 }
 async function loadMedia() {
-  if (!access) { alert('not logged in'); return; }
+  if (!access) { setStatus('Not logged in', true); return; }
+  setStatus('Chargement des medias...', false);
   const res = await fetch('/media',{headers:{Authorization:'Bearer '+access}});
-  if (!res.ok) { alert('load failed: ' + res.status); return; }
+  if (!res.ok) {
+    if (res.status === 401) {
+      setStatus('Token expire, fais Refresh token.', true);
+      return;
+    }
+    setStatus('Load failed: ' + res.status, true);
+    return;
+  }
   const list = await res.json();
   const div = document.getElementById('media'); div.innerHTML='';
-  (list||[]).forEach(m=>{
+  if (!Array.isArray(list) || list.length === 0) {
+    setStatus('Aucun media trouve.', false);
+    return;
+  }
+  setStatus('Medias charges: ' + list.length, false);
+  list.forEach(m=>{
     const el=document.createElement('div');
     el.className='card';
     const title=document.createElement('div');
@@ -468,10 +496,17 @@ async function play(id){
   window.open(url,'_blank');
 }
 async function scanNow(){
-  if (!access) { alert('not logged in'); return; }
+  if (!access) { setStatus('Not logged in', true); return; }
   const res = await fetch('/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
-  const text = await res.text();
-  alert('scan ' + (res.ok?'started':'failed') + ' ' + text);
+  let payload = null;
+  try { payload = await res.json(); } catch (e) {}
+  if (!res.ok) {
+    setStatus('Scan failed: ' + (payload && payload.error ? payload.error : res.status), true);
+    return;
+  }
+  const added = payload && typeof payload.added === 'number' ? payload.added : 0;
+  setStatus('Scan termine. Ajoutes: ' + added, false);
+  loadMedia();
 }
 function logout(){
   access = '';
@@ -479,6 +514,7 @@ function logout(){
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
   document.getElementById('token').textContent = 'Token: (empty)';
+  setStatus('Deconnecte', false);
 }
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);

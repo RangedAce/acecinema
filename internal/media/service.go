@@ -47,7 +47,7 @@ func NewService(session *gocql.Session, keyspace, mediaRoot string) *Service {
 }
 
 func (s *Service) List(ctx context.Context, query string, limit int) ([]Item, error) {
-	var items []Item
+	items := make([]Item, 0)
 	q := s.session.Query(fmt.Sprintf(`SELECT id,type,title,year,season,episode,show_id,metadata,poster_url,backdrop_url,created_at FROM %s.media_items LIMIT ?`, s.keyspace), limit)
 	iter := q.WithContext(ctx).Iter()
 	var it Item
