@@ -14,6 +14,8 @@ services:
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
+      SCYLLA_CONSISTENCY: LOCAL_QUORUM
+      SCYLLA_RF: 3
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
       APP_SECRET: change-me
@@ -30,7 +32,7 @@ services:
     networks:
       - acecinema
     volumes:
-      - media:/mnt/media:ro
+      - /mnt/nfs/media:/mnt/media:ro
 
   app2:
     <<: *acecinema-image
@@ -42,6 +44,8 @@ services:
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
+      SCYLLA_CONSISTENCY: LOCAL_QUORUM
+      SCYLLA_RF: 3
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
       APP_SECRET: change-me
@@ -58,7 +62,7 @@ services:
     networks:
       - acecinema
     volumes:
-      - media:/mnt/media:ro
+      - /mnt/nfs/media:/mnt/media:ro
 
   app3:
     <<: *acecinema-image
@@ -70,6 +74,8 @@ services:
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
+      SCYLLA_CONSISTENCY: LOCAL_QUORUM
+      SCYLLA_RF: 3
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
       APP_SECRET: change-me
@@ -86,7 +92,7 @@ services:
     networks:
       - acecinema
     volumes:
-      - media:/mnt/media:ro
+      - /mnt/nfs/media:/mnt/media:ro
 
   scanner:
     <<: *acecinema-image
@@ -97,17 +103,16 @@ services:
       SCYLLA_HOSTS: scylla1,scylla2,scylla3
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
+      SCYLLA_CONSISTENCY: LOCAL_QUORUM
+      SCYLLA_RF: 3
       MEDIA_ROOT: /mnt/media
     depends_on:
       - app1
     networks:
       - acecinema
     volumes:
-      - media:/mnt/media:ro
+      - /mnt/nfs/media:/mnt/media:ro
 
 networks:
   acecinema:
     name: acecinema-net
-
-volumes:
-  media: {}

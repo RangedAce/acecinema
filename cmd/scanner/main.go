@@ -23,7 +23,7 @@ func main() {
 	cluster := gocql.NewCluster(hosts...)
 	cluster.Port = envInt("SCYLLA_PORT", 9042)
 	cluster.Timeout = 5 * time.Second
-	cluster.Consistency = gocql.Quorum
+	cluster.Consistency = parseConsistency(env("SCYLLA_CONSISTENCY", "QUORUM"))
 
 	var session *gocql.Session
 
@@ -40,7 +40,7 @@ func main() {
 	if session == nil {
 		log.Fatalf("scylla connect: giving up")
 	}
-	if err := db.EnsureKeyspace(session, keyspace, 3); err != nil {
+	if err := db.EnsureKeyspace(session, keyspace, envInt("SCYLLA_RF", 3)); err != nil {
 		session.Close()
 		log.Fatalf("ensure keyspace: %v", err)
 	}
@@ -64,11 +64,17 @@ func main() {
 
 	mediaRoot := env("MEDIA_ROOT", "/mnt/media")
 	svc := media.NewService(session, keyspace, mediaRoot)
-	log.Printf("scanner starting (media_root=%s)", mediaRoot)
-	if err := svc.Scan(context.Background()); err != nil {
-		log.Fatalf("scan error: %v", err)
+	interval := envDuration("SCAN_INTERVAL", 10*time.Minute)
+
+	log.Printf("scanner starting (media_root=%s, interval=%s)", mediaRoot, interval)
+	for {
+		if err := svc.Scan(context.Background()); err != nil {
+			log.Printf("scan error: %v", err)
+		} else {
+			log.Println("scanner completed")
+		}
+		time.Sleep(interval)
 	}
-	log.Println("scanner completed")
 }
 
 func env(key, def string) string {
@@ -83,6 +89,30 @@ func envInt(key string, def int) int {
 		var out int
 		if _, err := fmt.Sscanf(v, "%d", &out); err == nil {
 			return out
+		}
+	}
+	return def
+}
+
+func parseConsistency(c string) gocql.Consistency {
+	switch strings.ToUpper(c) {
+	case "ONE":
+		return gocql.One
+	case "LOCAL_ONE":
+		return gocql.LocalOne
+	case "LOCAL_QUORUM":
+		return gocql.LocalQuorum
+	case "ALL":
+		return gocql.All
+	default:
+		return gocql.Quorum
+	}
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return def

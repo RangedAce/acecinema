@@ -30,6 +30,8 @@ type config struct {
 	ScyllaHosts []string
 	ScyllaPort  int
 	Keyspace    string
+	Consistency string
+	Replication int
 }
 
 func loadConfig() (config, error) {
@@ -46,6 +48,8 @@ func loadConfig() (config, error) {
 		ScyllaHosts: hosts,
 		ScyllaPort:  envDefaultInt("SCYLLA_PORT", 9042),
 		Keyspace:    envDefault("SCYLLA_KEYSPACE", "acecinema"),
+		Consistency: envDefault("SCYLLA_CONSISTENCY", "QUORUM"),
+		Replication: envDefaultInt("SCYLLA_RF", 3),
 	}
 	if cfg.AppSecret == "" {
 		return cfg, fmt.Errorf("APP_SECRET is required")
@@ -84,6 +88,11 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Logger, middleware.Recoverer)
 
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
 	r.Get("/", serveUI)
 	r.Post("/auth/login", handleLogin(session, authSvc, cfg))
 	r.Post("/auth/refresh", handleRefresh(authSvc))
@@ -121,7 +130,7 @@ func connectScylla(cfg config) (*gocql.Session, error) {
 	cluster := gocql.NewCluster(cfg.ScyllaHosts...)
 	cluster.Port = cfg.ScyllaPort
 	cluster.Timeout = 5 * time.Second
-	cluster.Consistency = gocql.Quorum
+	cluster.Consistency = parseConsistency(cfg.Consistency)
 
 	// connect without keyspace to ensure it exists
 	tmpSession, err := cluster.CreateSession()
@@ -133,7 +142,7 @@ func connectScylla(cfg config) (*gocql.Session, error) {
 	// retry loop for keyspace creation (in case cluster not fully ready)
 	created := false
 	for i := 0; i < 10; i++ {
-		if err := db.EnsureKeyspace(tmpSession, cfg.Keyspace, 3); err != nil {
+		if err := db.EnsureKeyspace(tmpSession, cfg.Keyspace, cfg.Replication); err != nil {
 			log.Printf("ensure keyspace retry %d/10: %v", i+1, err)
 			time.Sleep(3 * time.Second)
 			continue
@@ -170,6 +179,21 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func parseConsistency(c string) gocql.Consistency {
+	switch strings.ToUpper(c) {
+	case "ONE":
+		return gocql.One
+	case "LOCAL_ONE":
+		return gocql.LocalOne
+	case "LOCAL_QUORUM":
+		return gocql.LocalQuorum
+	case "ALL":
+		return gocql.All
+	default:
+		return gocql.Quorum
+	}
 }
 
 func errorJSON(w http.ResponseWriter, status int, msg string) {

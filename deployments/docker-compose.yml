@@ -17,66 +17,12 @@ services:
       --broadcast-address scylla
       --rpc-address 0.0.0.0
       --broadcast-rpc-address scylla
-      --seeds scylla,scylla2,scylla3
+      --seeds scylla
     volumes:
       - scylla1-data:/var/lib/scylla
     ports:
       - "9042:9042"
       - "10000:10000"
-    healthcheck:
-      test: ["CMD-SHELL", "nodetool status > /dev/null"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-
-  scylla2:
-    image: scylladb/scylla:5.4
-    container_name: acecinema-scylla2
-    privileged: true
-    cap_add:
-      - SYS_ADMIN
-    command: >
-      --smp 1 --memory 750M --overprovisioned 1
-      --api-address 0.0.0.0
-      --listen-address scylla2
-      --broadcast-address scylla2
-      --rpc-address 0.0.0.0
-      --broadcast-rpc-address scylla2
-      --seeds scylla,scylla2,scylla3
-    depends_on:
-      - scylla
-    volumes:
-      - scylla2-data:/var/lib/scylla
-    ports:
-      - "9142:9042"
-      - "11000:10000"
-    healthcheck:
-      test: ["CMD-SHELL", "nodetool status > /dev/null"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-
-  scylla3:
-    image: scylladb/scylla:5.4
-    container_name: acecinema-scylla3
-    privileged: true
-    cap_add:
-      - SYS_ADMIN
-    command: >
-      --smp 1 --memory 750M --overprovisioned 1
-      --api-address 0.0.0.0
-      --listen-address scylla3
-      --broadcast-address scylla3
-      --rpc-address 0.0.0.0
-      --broadcast-rpc-address scylla3
-      --seeds scylla,scylla2,scylla3
-    depends_on:
-      - scylla
-    volumes:
-      - scylla3-data:/var/lib/scylla
-    ports:
-      - "9242:9042"
-      - "12000:10000"
     healthcheck:
       test: ["CMD-SHELL", "nodetool status > /dev/null"]
       interval: 15s
@@ -94,6 +40,8 @@ services:
       SCYLLA_HOSTS: scylla
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
+      SCYLLA_CONSISTENCY: ONE
+      SCYLLA_RF: 1
       SCYLLA_USER: ""
       SCYLLA_PASSWORD: ""
       APP_SECRET: change-me
@@ -102,8 +50,6 @@ services:
       MEDIA_ROOT: /mnt/media
     depends_on:
       - scylla
-      - scylla2
-      - scylla3
     ports:
       - "8080:8080"
     healthcheck:
@@ -112,7 +58,7 @@ services:
       timeout: 5s
       retries: 3
     volumes:
-      - media:/mnt/media:ro
+      - /mnt/nfs/media:/mnt/media:ro
 
   scanner:
     <<: *acecinema-image
@@ -120,19 +66,16 @@ services:
     environment:
       ROLE: scanner
       NODE_NAME: scanner
-      SCYLLA_HOSTS: scylla,scylla2,scylla3
+      SCYLLA_HOSTS: scylla
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
+      SCYLLA_CONSISTENCY: ONE
+      SCYLLA_RF: 1
       MEDIA_ROOT: /mnt/media
     depends_on:
       - scylla
-      - scylla2
-      - scylla3
     volumes:
-      - media:/mnt/media:ro
+      - /mnt/nfs/media:/mnt/media:ro
 
 volumes:
   scylla1-data: {}
-  scylla2-data: {}
-  scylla3-data: {}
-  media: {}
