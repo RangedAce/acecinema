@@ -87,7 +87,7 @@ func main() {
 	r.Get("/", serveUI)
 	r.Post("/auth/login", handleLogin(session, authSvc, cfg))
 	r.Post("/auth/refresh", handleRefresh(authSvc))
-	r.Post("/auth/change-password", authSvc.RequireAuth(handleChangePassword(session, cfg.Keyspace, authSvc)))
+	r.With(authSvc.RequireAuth).Post("/auth/change-password", handleChangePassword(session, cfg.Keyspace, authSvc))
 
 	r.Route("/users", func(r chi.Router) {
 		r.Use(authSvc.RequireRole("admin"))
@@ -230,7 +230,7 @@ func handleCreateUser(session *gocql.Session, keyspace string) http.HandlerFunc 
 
 func handleChangePassword(session *gocql.Session, keyspace string, authSvc *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims := authSvc.ClaimsFromContext(r.Context())
+		claims := auth.ClaimsFromContext(r.Context())
 		var req struct {
 			Old string `json:"old_password"`
 			New string `json:"new_password"`
