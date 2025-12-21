@@ -4,6 +4,8 @@ services:
   scylla1:
     image: scylladb/scylla:5.4
     container_name: acecinema-scylla1
+    sysctls:
+      fs.aio-max-nr: 1048576
     command: >
       --smp 1 --memory 750M --overprovisioned 1
       --api-address 0.0.0.0
@@ -25,6 +27,8 @@ services:
   scylla2:
     image: scylladb/scylla:5.4
     container_name: acecinema-scylla2
+    sysctls:
+      fs.aio-max-nr: 1048576
     command: >
       --smp 1 --memory 750M --overprovisioned 1
       --api-address 0.0.0.0
@@ -48,6 +52,8 @@ services:
   scylla3:
     image: scylladb/scylla:5.4
     container_name: acecinema-scylla3
+    sysctls:
+      fs.aio-max-nr: 1048576
     command: >
       --smp 1 --memory 750M --overprovisioned 1
       --api-address 0.0.0.0
