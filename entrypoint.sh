@@ -73,12 +73,14 @@ init_primary() {
   if [[ ! -s "$PGDATA/PG_VERSION" ]]; then
     log "initializing primary database in $PGDATA"
     run_as_postgres initdb -D "$PGDATA" >/dev/null
-    write_conf
-    write_hba
+  fi
 
-    log "bootstrapping roles and database (db_user=${DB_USER}, repl_user=${REPL_USER})"
-    run_as_postgres pg_ctl -D "$PGDATA" -o "-c listen_addresses='*' -p ${DB_PORT}" -w start
-    run_as_postgres psql --username=postgres -v ON_ERROR_STOP=1 <<SQL
+  write_conf
+  write_hba
+
+  log "bootstrapping roles and database (db_user=${DB_USER}, repl_user=${REPL_USER})"
+  run_as_postgres pg_ctl -D "$PGDATA" -o "-c listen_addresses='*' -p ${DB_PORT}" -w start
+  run_as_postgres psql --username=postgres -v ON_ERROR_STOP=1 <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}') THEN
     CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
@@ -88,15 +90,11 @@ DO \$\$ BEGIN
   END IF;
 END \$\$;
 SQL
-    # CREATE DATABASE must be outside DO; create if missing
-    if [[ -z "$(run_as_postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")" ]]; then
-      run_as_postgres createdb -O "${DB_USER}" "${DB_NAME}"
-    fi
-    run_as_postgres pg_ctl -D "$PGDATA" -m fast -w stop
-  else
-    write_conf
-    write_hba
+  if [[ -z "$(run_as_postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")" ]]; then
+    run_as_postgres createdb -O "${DB_USER}" "${DB_NAME}"
   fi
+  run_as_postgres pg_ctl -D "$PGDATA" -m fast -w stop
+
   log "starting Postgres primary on port ${DB_PORT}"
   exec_as_postgres postgres -D "$PGDATA" -p "${DB_PORT}"
 }
@@ -111,12 +109,10 @@ init_replica() {
     log "performing basebackup from ${MASTER_HOST}:${MASTER_PORT} (slot=${REPLICATION_SLOT})"
     rm -rf "${PGDATA:?}/"*
     PGPASSWORD="$REPL_PASSWORD" run_as_postgres pg_basebackup -h "$MASTER_HOST" -p "$MASTER_PORT" -D "$PGDATA" -U "$REPL_USER" -Fp -Xs -R -C -S "$REPLICATION_SLOT"
-    write_conf
-    write_hba
-  else
-    write_conf
-    write_hba
   fi
+  write_conf
+  write_hba
+
   log "starting Postgres replica on port ${DB_PORT} (master=${MASTER_HOST}:${MASTER_PORT})"
   exec_as_postgres postgres -D "$PGDATA" -p "${DB_PORT}"
 }
