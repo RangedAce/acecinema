@@ -19,9 +19,6 @@ services:
       - "10000:10000"
     healthcheck:
       test: ["CMD-SHELL", "nodetool status > /dev/null"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
     networks:
       - acecinema
 
@@ -45,9 +42,6 @@ services:
       - "11000:10000"
     healthcheck:
       test: ["CMD-SHELL", "nodetool status > /dev/null"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
     networks:
       - acecinema
 
@@ -71,9 +65,6 @@ services:
       - "12000:10000"
     healthcheck:
       test: ["CMD-SHELL", "nodetool status > /dev/null"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
     networks:
       - acecinema
 

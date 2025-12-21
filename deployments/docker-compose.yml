@@ -61,12 +61,14 @@ services:
     environment:
       ROLE: scanner
       NODE_NAME: scanner
-      SCYLLA_HOSTS: scylla
+      SCYLLA_HOSTS: scylla,scylla2,scylla3
       SCYLLA_PORT: 9042
       SCYLLA_KEYSPACE: acecinema
       MEDIA_ROOT: /mnt/media
     depends_on:
       - scylla
+      - scylla2
+      - scylla3
     volumes:
       - media:/mnt/media:ro
 
