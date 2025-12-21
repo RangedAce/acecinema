@@ -407,7 +407,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   </div>
   <div>
     <button id="loadBtn">Charger les medias</button>
+    <button id="scanBtn">Scanner maintenant</button>
   </div>
+  <div id="token" style="margin-top:8px; font-family: monospace;"></div>
   <div id="media"></div>
 <script>
 let access='';
@@ -415,6 +417,7 @@ async function login() {
   const res = await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});
   const data = await res.json();
   access = data.access_token||'';
+  document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
   alert('login ' + (res.ok?'ok':'ko'));
 }
 async function refresh() {
@@ -445,9 +448,14 @@ async function play(id){
   const url='/stream?path='+encodeURIComponent(assets[0].path);
   window.open(url,'_blank');
 }
+async function scanNow(){
+  const res = await fetch('/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
+  alert('scan ' + (res.ok?'started':'failed'));
+}
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);
 document.getElementById('loadBtn').addEventListener('click', loadMedia);
+document.getElementById('scanBtn').addEventListener('click', scanNow);
 </script>
 </body>
 </html>`)
