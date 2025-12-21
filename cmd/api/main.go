@@ -436,8 +436,9 @@ async function refresh() {
   }
 }
 async function loadMedia() {
+  if (!access) { alert('not logged in'); return; }
   const res = await fetch('/media',{headers:{Authorization:'Bearer '+access}});
-  if (!res.ok) { alert('load failed'); return; }
+  if (!res.ok) { alert('load failed: ' + res.status); return; }
   const list = await res.json();
   const div = document.getElementById('media'); div.innerHTML='';
   (list||[]).forEach(m=>{
@@ -460,8 +461,10 @@ async function play(id){
   window.open(url,'_blank');
 }
 async function scanNow(){
+  if (!access) { alert('not logged in'); return; }
   const res = await fetch('/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
-  alert('scan ' + (res.ok?'started':'failed'));
+  const text = await res.text();
+  alert('scan ' + (res.ok?'started':'failed') + ' ' + text);
 }
 function logout(){
   access = '';
