@@ -20,7 +20,7 @@ services:
     volumes:
       - db1-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -d ${DB_NAME:-acecinema} -h localhost -p ${DB_PORT:-5432}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -47,7 +47,7 @@ services:
     volumes:
       - db2-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -d ${DB_NAME:-acecinema} -h localhost -p ${DB_PORT:-5432}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -74,7 +74,7 @@ services:
     volumes:
       - db3-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -d ${DB_NAME:-acecinema} -h localhost -p ${DB_PORT:-5432}"]
       interval: 10s
       timeout: 5s
       retries: 5
