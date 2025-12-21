@@ -1,93 +1,86 @@
 version: "3.9"
 
-x-acecinema-image: &acecinema-image
-  image: rangedace/acecinema:latest
-
 services:
-  db1:
-    <<: *acecinema-image
-    container_name: acecinema-db1
-    environment:
-      ROLE: db-primary
-      NODE_NAME: db1
-      DB_PORT: 5432
-      DB_USER: ace
-      DB_PASSWORD: acepass
-      DB_NAME: acecinema
-      REPL_USER: repl
-      REPL_PASSWORD: replpass
-    ports:
-      - "5432:5432"
+  scylla1:
+    image: scylladb/scylla:5.4
+    container_name: acecinema-scylla1
+    command: >
+      --smp 1 --memory 750M --overprovisioned 1
+      --api-address 0.0.0.0
+      --listen-address scylla1
+      --broadcast-address scylla1
+      --rpc-address 0.0.0.0
+      --broadcast-rpc-address scylla1
+      --seeds scylla1,scylla2,scylla3
     volumes:
-      - db1-data:/var/lib/postgresql/data
+      - scylla1-data:/var/lib/scylla
+    ports:
+      - "9042:9042"
+      - "10000:10000"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -d ${DB_NAME:-acecinema} -h localhost -p ${DB_PORT:-5432}"]
-      interval: 10s
+      test: ["CMD-SHELL", "nodetool status > /dev/null"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
     networks:
       - acecinema
 
-  db2:
-    <<: *acecinema-image
-    container_name: acecinema-db2
-    environment:
-      ROLE: db-replica
-      NODE_NAME: db2
-      MASTER_HOST: db1
-      MASTER_PORT: 5432
-      DB_PORT: 5432
-      DB_USER: ace
-      DB_PASSWORD: acepass
-      DB_NAME: acecinema
-      REPL_USER: repl
-      REPL_PASSWORD: replpass
+  scylla2:
+    image: scylladb/scylla:5.4
+    container_name: acecinema-scylla2
+    command: >
+      --smp 1 --memory 750M --overprovisioned 1
+      --api-address 0.0.0.0
+      --listen-address scylla2
+      --broadcast-address scylla2
+      --rpc-address 0.0.0.0
+      --broadcast-rpc-address scylla2
+      --seeds scylla1,scylla2,scylla3
     depends_on:
-      - db1
-    ports:
-      - "5433:5432"
+      - scylla1
     volumes:
-      - db2-data:/var/lib/postgresql/data
+      - scylla2-data:/var/lib/scylla
+    ports:
+      - "9142:9042"
+      - "11000:10000"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -d ${DB_NAME:-acecinema} -h localhost -p ${DB_PORT:-5432}"]
-      interval: 10s
+      test: ["CMD-SHELL", "nodetool status > /dev/null"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
     networks:
       - acecinema
 
-  db3:
-    <<: *acecinema-image
-    container_name: acecinema-db3
-    environment:
-      ROLE: db-replica
-      NODE_NAME: db3
-      MASTER_HOST: db1
-      MASTER_PORT: 5432
-      DB_PORT: 5432
-      DB_USER: ace
-      DB_PASSWORD: acepass
-      DB_NAME: acecinema
-      REPL_USER: repl
-      REPL_PASSWORD: replpass
+  scylla3:
+    image: scylladb/scylla:5.4
+    container_name: acecinema-scylla3
+    command: >
+      --smp 1 --memory 750M --overprovisioned 1
+      --api-address 0.0.0.0
+      --listen-address scylla3
+      --broadcast-address scylla3
+      --rpc-address 0.0.0.0
+      --broadcast-rpc-address scylla3
+      --seeds scylla1,scylla2,scylla3
     depends_on:
-      - db1
-    ports:
-      - "5434:5432"
+      - scylla1
     volumes:
-      - db3-data:/var/lib/postgresql/data
+      - scylla3-data:/var/lib/scylla
+    ports:
+      - "9242:9042"
+      - "12000:10000"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -d ${DB_NAME:-acecinema} -h localhost -p ${DB_PORT:-5432}"]
-      interval: 10s
+      test: ["CMD-SHELL", "nodetool status > /dev/null"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
     networks:
       - acecinema
 
 volumes:
-  db1-data: {}
-  db2-data: {}
-  db3-data: {}
+  scylla1-data: {}
+  scylla2-data: {}
+  scylla3-data: {}
 
 networks:
   acecinema:

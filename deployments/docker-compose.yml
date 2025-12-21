@@ -4,26 +4,27 @@ x-acecinema-image: &acecinema-image
   image: rangedace/acecinema:latest
 
 services:
-  db:
-    <<: *acecinema-image
-    container_name: acecinema-db
-    restart: unless-stopped
-    environment:
-      ROLE: db-primary
-      NODE_NAME: db1
-      DB_PORT: 5432
-      DB_USER: ace
-      DB_PASSWORD: acepass
-      DB_NAME: acecinema
-      REPL_USER: repl
-      REPL_PASSWORD: replpass
+  scylla:
+    image: scylladb/scylla:5.4
+    container_name: acecinema-scylla
+    command: >
+      --smp 1 --memory 750M --overprovisioned 1
+      --api-address 0.0.0.0
+      --listen-address scylla
+      --broadcast-address scylla
+      --rpc-address 0.0.0.0
+      --broadcast-rpc-address scylla
+      --seeds scylla
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - scylla-data:/var/lib/scylla
+    ports:
+      - "9042:9042"
+      - "10000:10000"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ace} -h localhost -p ${DB_PORT:-5432}"]
-      interval: 10s
+      test: ["CMD-SHELL", "nodetool status > /dev/null"]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   app:
     <<: *acecinema-image
@@ -33,14 +34,14 @@ services:
       ROLE: app
       NODE_NAME: app1
       APP_PORT: 8080
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_USER: ace
-      DB_PASSWORD: acepass
-      DB_NAME: acecinema
+      SCYLLA_HOSTS: scylla
+      SCYLLA_PORT: 9042
+      SCYLLA_KEYSPACE: acecinema
+      SCYLLA_USER: ""
+      SCYLLA_PASSWORD: ""
       APP_SECRET: change-me
     depends_on:
-      - db
+      - scylla
     ports:
       - "8080:8080"
     healthcheck:
@@ -50,4 +51,4 @@ services:
       retries: 3
 
 volumes:
-  db-data: {}
+  scylla-data: {}

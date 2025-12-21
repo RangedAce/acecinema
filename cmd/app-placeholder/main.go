@@ -1,23 +1,26 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/gocql/gocql"
 )
 
 type infoPayload struct {
-	NodeName string `json:"node_name"`
-	Role     string `json:"role"`
-	DBHost   string `json:"db_host"`
-	DBPort   string `json:"db_port"`
+	NodeName     string   `json:"node_name"`
+	Role         string   `json:"role"`
+	ScyllaHosts  []string `json:"scylla_hosts"`
+	ScyllaPort   string   `json:"scylla_port"`
+	ScyllaKS     string   `json:"scylla_keyspace"`
+	ScyllaUser   string   `json:"scylla_user,omitempty"`
+	HasDBCheck   bool     `json:"db_check_enabled"`
+	LastDBStatus string   `json:"last_db_status,omitempty"`
 }
 
 func env(key, fallback string) string {
@@ -30,15 +33,31 @@ func env(key, fallback string) string {
 func main() {
 	node := env("NODE_NAME", "app")
 	role := env("ROLE", "app")
-	dbHost := env("DB_HOST", "db")
-	dbPort := env("DB_PORT", "5432")
-	dbUser := env("DB_USER", "ace")
-	dbPassword := env("DB_PASSWORD", "acepass")
-	dbName := env("DB_NAME", "acecinema")
+	hostsEnv := env("SCYLLA_HOSTS", "scylla1,scylla2,scylla3")
+	scyllaHosts := splitAndTrim(hostsEnv)
+	scyllaPort := env("SCYLLA_PORT", "9042")
+	scyllaKS := env("SCYLLA_KEYSPACE", "acecinema")
+	scyllaUser := os.Getenv("SCYLLA_USER")
+	scyllaPass := os.Getenv("SCYLLA_PASSWORD")
 	appPort := env("APP_PORT", env("PORT", "8080"))
 
-	mux := http.NewServeMux()
+	cluster := gocql.NewCluster(scyllaHosts...)
+	cluster.Port = mustAtoi(scyllaPort, 9042)
+	if scyllaKS != "" {
+		cluster.Keyspace = scyllaKS
+	} else {
+		cluster.Keyspace = "system"
+	}
+	cluster.Timeout = 3 * time.Second
+	cluster.Consistency = gocql.Quorum
+	if scyllaUser != "" {
+		cluster.Authenticator = gocql.PasswordAuthenticator{
+			Username: scyllaUser,
+			Password: scyllaPass,
+		}
+	}
 
+	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -46,40 +65,30 @@ func main() {
 
 	mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, infoPayload{
-			NodeName: node,
-			Role:     role,
-			DBHost:   dbHost,
-			DBPort:   dbPort,
+			NodeName:     node,
+			Role:         role,
+			ScyllaHosts:  scyllaHosts,
+			ScyllaPort:   scyllaPort,
+			ScyllaKS:     scyllaKS,
+			ScyllaUser:   scyllaUser,
+			HasDBCheck:   true,
+			LastDBStatus: "unknown",
 		})
 	})
 
 	mux.HandleFunc("/db-check", func(w http.ResponseWriter, r *http.Request) {
-		connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", dbUser, dbPassword, dbHost, dbPort, dbName)
-		db, err := sql.Open("pgx", connStr)
+		clusterName, err := pingScylla(r, cluster, scyllaKS)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("open db: %v", err), http.StatusServiceUnavailable)
-			return
-		}
-		defer db.Close()
-
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-
-		if err := db.PingContext(ctx); err != nil {
-			http.Error(w, fmt.Sprintf("ping db: %v", err), http.StatusServiceUnavailable)
-			return
-		}
-		var out int
-		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&out); err != nil || out != 1 {
-			http.Error(w, fmt.Sprintf("select failed: %v", err), http.StatusServiceUnavailable)
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		writeJSON(w, map[string]interface{}{
-			"ok":       true,
-			"node":     node,
-			"db_host":  dbHost,
-			"db_port":  dbPort,
-			"selected": out,
+			"ok":           true,
+			"node":         node,
+			"role":         role,
+			"scylla_hosts": scyllaHosts,
+			"scylla_port":  scyllaPort,
+			"cluster":      clusterName,
 		})
 	})
 
@@ -89,7 +98,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("placeholder app starting on :%s (node=%s role=%s db=%s:%s)", appPort, node, role, dbHost, dbPort)
+	log.Printf("placeholder app starting on :%s (node=%s role=%s scylla=%s:%s)", appPort, node, role, hostsEnv, scyllaPort)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server stopped: %v", err)
 	}
@@ -100,4 +109,62 @@ func writeJSON(w http.ResponseWriter, payload interface{}) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(payload)
+}
+
+func splitAndTrim(in string) []string {
+	parts := strings.Split(in, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func mustAtoi(v string, fallback int) int {
+	if v == "" {
+		return fallback
+	}
+	var out int
+	_, err := fmt.Sscanf(v, "%d", &out)
+	if err != nil {
+		return fallback
+	}
+	return out
+}
+
+func pingScylla(r *http.Request, cluster *gocql.ClusterConfig, keyspace string) (string, error) {
+	// try with configured keyspace
+	session, err := cluster.CreateSession()
+	if err != nil && keyspace != "" {
+		// fallback without keyspace to allow creating it
+		tmp := *cluster
+		tmp.Keyspace = "system"
+		session, err = tmp.CreateSession()
+		if err != nil {
+			return "", err
+		}
+		defer session.Close()
+		if err := session.Query(fmt.Sprintf("CREATE KEYSPACE IF NOT EXISTS %s WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 3}", keyspace)).WithContext(r.Context()).Exec(); err != nil {
+			return "", err
+		}
+		// retry with target keyspace
+		tmp.Keyspace = keyspace
+		session, err = tmp.CreateSession()
+		if err != nil {
+			return "", err
+		}
+	}
+	if session == nil {
+		return "", fmt.Errorf("no session")
+	}
+	defer session.Close()
+
+	var clusterName string
+	if err := session.Query("SELECT cluster_name FROM system.local").WithContext(r.Context()).Scan(&clusterName); err != nil {
+		return "", err
+	}
+	return clusterName, nil
 }
