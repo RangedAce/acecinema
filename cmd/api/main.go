@@ -137,7 +137,7 @@ func main() {
         })
     })
 
-	r.With(authSvc.RequireAuth).Get("/stream", handleStream(mediaSvc, cfg.MediaRoot))
+	r.Get("/stream", handleStream(mediaSvc, cfg.MediaRoot, authSvc))
 
 	addr := ":" + cfg.Port
 	log.Printf("api listening on %s", addr)
@@ -360,8 +360,17 @@ func handleUpdateProgress(svc *media.Service) http.HandlerFunc {
 	}
 }
 
-func handleStream(svc *media.Service, mediaRoot string) http.HandlerFunc {
+func handleStream(svc *media.Service, mediaRoot string, authSvc *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		token := tokenFromRequest(r)
+		if token == "" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		if _, err := authSvc.ParseToken(token); err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
 		path := r.URL.Query().Get("path")
 		if path == "" {
 			errorJSON(w, http.StatusBadRequest, "path required")
@@ -374,6 +383,17 @@ func handleStream(svc *media.Service, mediaRoot string) http.HandlerFunc {
 		}
 		http.ServeFile(w, r, full)
 	}
+}
+
+func tokenFromRequest(r *http.Request) string {
+	authz := r.Header.Get("Authorization")
+	if authz != "" {
+		parts := strings.SplitN(authz, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			return parts[1]
+		}
+	}
+	return r.URL.Query().Get("token")
 }
 
 func parseConsistency(c string) gocql.Consistency {
@@ -490,9 +510,19 @@ async function loadMedia() {
   });
 }
 async function play(id){
-  const assets = await fetch('/media/'+id+'/assets',{headers:{Authorization:'Bearer '+access}}).then(r=>r.json());
-  if(assets.length===0){alert('no assets'); return;}
-  const url='/stream?path='+encodeURIComponent(assets[0].path);
+  if (!access) { setStatus('Not logged in', true); return; }
+  const res = await fetch('/media/'+id+'/assets',{headers:{Authorization:'Bearer '+access}});
+  if (!res.ok) {
+    if (res.status === 401) {
+      setStatus('Token expire, fais Refresh token.', true);
+      return;
+    }
+    setStatus('Assets load failed: ' + res.status, true);
+    return;
+  }
+  const assets = await res.json();
+  if(assets.length===0){setStatus('No assets for media', true); return;}
+  const url='/stream?path='+encodeURIComponent(assets[0].path)+'&token='+encodeURIComponent(access);
   window.open(url,'_blank');
 }
 async function scanNow(){

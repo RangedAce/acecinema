@@ -78,6 +78,10 @@ func (s *Service) parseToken(tokenStr string) (*Claims, error) {
 	return &Claims{UserID: c.UserID, Role: c.Role, MustChangePasswd: c.MustChangePasswd}, nil
 }
 
+func (s *Service) ParseToken(tokenStr string) (*Claims, error) {
+	return s.parseToken(tokenStr)
+}
+
 func (s *Service) Refresh(refreshToken string) (string, string, error) {
 	claims, err := s.parseToken(refreshToken)
 	if err != nil {
