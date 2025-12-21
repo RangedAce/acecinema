@@ -112,11 +112,12 @@ func (s *Service) Scan(ctx context.Context) (int, error) {
 		title, year := parseTitle(info.Name())
 		mediaID := gocql.TimeUUID()
 		assetID := gocql.TimeUUID()
+		var existingPath string
 		var existingID gocql.UUID
 		applied, err := s.session.Query(
 			fmt.Sprintf(`INSERT INTO %s.media_paths (path, media_id) VALUES (?, ?) IF NOT EXISTS`, s.keyspace),
 			rel, mediaID,
-		).WithContext(ctx).ScanCAS(&existingID)
+		).WithContext(ctx).ScanCAS(&existingPath, &existingID)
 		if err != nil {
 			return err
 		}
