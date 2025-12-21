@@ -28,14 +28,14 @@ func main() {
 	var session *gocql.Session
 
 	// first connect without keyspace to ensure it exists
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		s, err := cluster.CreateSession()
 		if err == nil {
 			session = s
 			break
 		}
-		log.Printf("scylla connect retry %d/10: %v", i+1, err)
-		time.Sleep(3 * time.Second)
+		log.Printf("scylla connect retry %d/20: %v", i+1, err)
+		time.Sleep(5 * time.Second)
 	}
 	if session == nil {
 		log.Fatalf("scylla connect: giving up")
@@ -48,14 +48,14 @@ func main() {
 
 	// reconnect with keyspace
 	cluster.Keyspace = keyspace
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		s, err := cluster.CreateSession()
 		if err == nil {
 			session = s
 			break
 		}
-		log.Printf("scylla connect (with keyspace) retry %d/10: %v", i+1, err)
-		time.Sleep(3 * time.Second)
+		log.Printf("scylla connect (with keyspace) retry %d/20: %v", i+1, err)
+		time.Sleep(5 * time.Second)
 	}
 	if session == nil {
 		log.Fatalf("scylla connect with keyspace: giving up")
