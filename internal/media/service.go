@@ -122,7 +122,14 @@ func (s *Service) Scan(ctx context.Context) (int, error) {
 			return err
 		}
 		if !applied {
-			// already indexed
+			// already indexed; ensure media item and asset exist
+			inserted, err := s.ensureMediaForPath(ctx, existingID, rel, info, title, year)
+			if err != nil {
+				return err
+			}
+			if inserted {
+				added++
+			}
 			return nil
 		}
 		if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_items (id,type,title,year,created_at) VALUES (?,?,?,?,?)`, s.keyspace),
@@ -140,6 +147,46 @@ func (s *Service) Scan(ctx context.Context) (int, error) {
 		return added, err
 	}
 	return added, nil
+}
+
+func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, rel string, info os.FileInfo, title string, year int) (bool, error) {
+	inserted := false
+	var existing string
+	err := s.session.Query(fmt.Sprintf(`SELECT id FROM %s.media_items WHERE id=?`, s.keyspace), mediaID).
+		WithContext(ctx).Scan(&existing)
+	if err != nil {
+		if !errors.Is(err, gocql.ErrNotFound) {
+			return false, err
+		}
+		if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_items (id,type,title,year,created_at) VALUES (?,?,?,?,?)`, s.keyspace),
+			mediaID, "movie", title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
+			return false, err
+		}
+		inserted = true
+	}
+
+	found := false
+	iter := s.session.Query(fmt.Sprintf(`SELECT id,path FROM %s.media_assets WHERE media_id=?`, s.keyspace), mediaID).
+		WithContext(ctx).Iter()
+	var assetID gocql.UUID
+	var assetPath string
+	for iter.Scan(&assetID, &assetPath) {
+		if assetPath == rel {
+			found = true
+			break
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return false, err
+	}
+	if found {
+		return inserted, nil
+	}
+	if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_assets (id,media_id,path,size,format) VALUES (?,?,?,?,?)`, s.keyspace),
+		gocql.TimeUUID(), mediaID, rel, info.Size(), filepath.Ext(rel)).WithContext(ctx).Exec(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func isVideo(path string) bool {
