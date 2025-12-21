@@ -68,10 +68,11 @@ func main() {
 
 	log.Printf("scanner starting (media_root=%s, interval=%s)", mediaRoot, interval)
 	for {
-		if err := svc.Scan(context.Background()); err != nil {
+		added, err := svc.Scan(context.Background())
+		if err != nil {
 			log.Printf("scan error: %v", err)
 		} else {
-			log.Println("scanner completed")
+			log.Printf("scanner completed: %d new items", added)
 		}
 		time.Sleep(interval)
 	}

@@ -125,10 +125,17 @@ func main() {
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
 
-	r.With(authSvc.RequireRole("admin")).Post("/scan", func(w http.ResponseWriter, r *http.Request) {
-		go mediaSvc.Scan(context.Background())
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "scan started"})
-	})
+    r.With(authSvc.RequireRole("admin")).Post("/scan", func(w http.ResponseWriter, r *http.Request) {
+        added, err := mediaSvc.Scan(context.Background())
+        if err != nil {
+            errorJSON(w, http.StatusInternalServerError, err.Error())
+            return
+        }
+        writeJSON(w, http.StatusOK, map[string]interface{}{
+            "status": "scan completed",
+            "added":  added,
+        })
+    })
 
 	r.With(authSvc.RequireAuth).Get("/stream", handleStream(mediaSvc, cfg.MediaRoot))
 

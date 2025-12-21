@@ -96,8 +96,9 @@ func (s *Service) UpdateProgress(ctx context.Context, userID, mediaID string, po
 }
 
 // Scan walks the media root and inserts items/assets.
-func (s *Service) Scan(ctx context.Context) error {
-	return filepath.Walk(s.mediaRoot, func(path string, info os.FileInfo, err error) error {
+func (s *Service) Scan(ctx context.Context) (int, error) {
+	added := 0
+	err := filepath.Walk(s.mediaRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -131,8 +132,13 @@ func (s *Service) Scan(ctx context.Context) error {
 			assetID, mediaID, rel, info.Size(), filepath.Ext(path)).WithContext(ctx).Exec(); err != nil {
 			return err
 		}
+		added++
 		return nil
 	})
+	if err != nil {
+		return added, err
+	}
+	return added, nil
 }
 
 func isVideo(path string) bool {
