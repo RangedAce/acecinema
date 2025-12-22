@@ -1227,10 +1227,13 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.2s ease;
+      z-index: 2;
     }
-    .player-shell.controls-visible .player-bar {
-      opacity: 1;
-      pointer-events: auto;
+    .player-close {
+      background: #2b2b2b;
+      color: #fff;
+      border: 1px solid #3a3a3a;
+      cursor: pointer;
     }
     .player-controls {
       z-index: 2;
@@ -1691,7 +1694,7 @@ function showControls(){
     playerShell.classList.remove('controls-visible');
   }, 2500);
 }
-overlay.addEventListener('mousemove', showControls);
+playerShell.addEventListener('mousemove', showControls);
 async function loadAudioTracks(mediaId){
   audioSelect.innerHTML = '<option value="-1">Auto</option>';
   audioHint.textContent = '';
