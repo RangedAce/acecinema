@@ -2855,6 +2855,8 @@ let isSeeking = false;
 let seekPointerActive = false;
 let pendingSeekTime = null;
 let hlsBaseOffset = 0;
+let seekRaf = null;
+let seekRafValue = null;
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
@@ -3130,11 +3132,8 @@ seekBar.addEventListener('input', () => {
   updateRangeFill(seekBar);
 });
 seekBar.addEventListener('change', () => {
-  const duration = getDuration();
-  if (!duration) { return; }
   const t = parseFloat(seekBar.value);
-  const global = Math.min(Math.max(t, 0), duration);
-  playerVideo.currentTime = global;
+  requestSeek(t);
   isSeeking = false;
 });
 seekBar.addEventListener('pointerdown', (e) => {
@@ -3147,7 +3146,14 @@ seekBar.addEventListener('pointerdown', (e) => {
 });
 seekBar.addEventListener('pointermove', (e) => {
   if (!seekPointerActive) return;
-  seekFromPointer(e);
+  seekRafValue = seekFromPointer(e);
+  if (seekRaf) return;
+  seekRaf = requestAnimationFrame(() => {
+    seekRaf = null;
+    if (seekRafValue !== null) {
+      requestSeek(seekRafValue);
+    }
+  });
 });
 seekBar.addEventListener('pointerup', (e) => {
   if (!seekPointerActive) return;
