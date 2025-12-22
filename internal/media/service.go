@@ -396,6 +396,7 @@ func (s *Service) tmdbFindByImdb(imdbID string) (map[string]string, string, erro
 	params := url.Values{}
 	params.Set("api_key", s.tmdbKey)
 	params.Set("external_source", "imdb_id")
+	params.Set("language", "fr-FR")
 	reqURL := endpoint + "?" + params.Encode()
 	body, err := getJSON(reqURL)
 	if err != nil {
@@ -433,6 +434,7 @@ func (s *Service) tmdbSearchMovie(title string, year int) (map[string]string, st
 	params := url.Values{}
 	params.Set("api_key", s.tmdbKey)
 	params.Set("query", title)
+	params.Set("language", "fr-FR")
 	if year > 0 {
 		params.Set("year", fmt.Sprintf("%d", year))
 	}

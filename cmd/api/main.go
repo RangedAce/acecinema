@@ -707,7 +707,25 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       padding: 12px;
       background: var(--white);
     }
-    .card-title { font-weight: bold; margin-bottom: 10px; }
+    .card-title { font-weight: bold; margin-top: 10px; }
+    .card-year { color: var(--grey); font-size: 12px; margin-top: 4px; }
+    .poster {
+      width: 100%;
+      aspect-ratio: 2 / 3;
+      background: var(--dust-grey);
+      border-radius: 10px;
+      object-fit: cover;
+    }
+    .play-btn {
+      margin-top: 10px;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
     .meta { color: var(--grey); font-size: 12px; }
     .player-overlay {
       position: fixed;
@@ -901,17 +919,26 @@ async function loadMedia() {
   list.forEach(m=>{
     const el = document.createElement('div');
     el.className = 'card';
+    if (m.poster_url) {
+      const img = document.createElement('img');
+      img.className = 'poster';
+      img.loading = 'lazy';
+      img.src = m.poster_url;
+      img.alt = m.title || 'poster';
+      el.appendChild(img);
+    }
     const title = document.createElement('div');
     title.className = 'card-title';
-    title.textContent = m.title + ' (' + (m.year || '') + ')';
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = 'Type: ' + m.type;
+    title.textContent = m.title || 'Sans titre';
+    const year = document.createElement('div');
+    year.className = 'card-year';
+    year.textContent = m.year ? String(m.year) : '';
     const btn = document.createElement('button');
-    btn.textContent = 'Play';
+    btn.className = 'play-btn';
+    btn.textContent = '▶';
     btn.addEventListener('click', () => play(m.id, m.title));
     el.appendChild(title);
-    el.appendChild(meta);
+    el.appendChild(year);
     el.appendChild(btn);
     mediaGrid.appendChild(el);
   });
