@@ -1193,7 +1193,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .player-overlay {
       position: fixed;
       inset: 0;
-      background: #000;
+      background: red; /* DEBUG */
       display: none;
       align-items: center;
       justify-content: center;
@@ -1216,7 +1216,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       gap: 10px;
       align-items: center;
       padding: 8px 12px;
-      background: #161616;
+      background: blue; /* DEBUG */
       color: #fff;
       font-size: 12px;
       border-top: 1px solid #2a2a2a;
@@ -1224,8 +1224,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       left: 0;
       right: 0;
       bottom: 0;
-      opacity: 0;
-      pointer-events: none;
+      opacity: 1; /* DEBUG */
+      pointer-events: auto; /* DEBUG */
       transition: opacity 0.2s ease;
       z-index: 2;
     }
