@@ -935,6 +935,13 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		filepath.Join(sess.dir, "index.m3u8"),
 	}
 	cmd := exec.Command("ffmpeg", args...)
+	// prevent ffmpeg from hanging on stdin
+	stdin, err := os.Open(os.DevNull)
+	if err == nil {
+		cmd.Stdin = stdin
+		defer stdin.Close()
+	}
+
 	logFile, err := os.OpenFile(sess.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err == nil {
 		cmd.Stdout = logFile
