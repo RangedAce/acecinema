@@ -8,9 +8,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"crypto/rand"
+	"encoding/hex"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -36,6 +41,21 @@ type config struct {
 }
 
 var buildVersion = envDefault("BUILD_VERSION", "dev")
+
+type hlsSession struct {
+	id         string
+	path       string
+	audioIndex int
+	dir        string
+	cmd        *exec.Cmd
+	lastAccess time.Time
+}
+
+type hlsManager struct {
+	baseDir  string
+	mu       sync.Mutex
+	sessions map[string]*hlsSession
+}
 
 func loadConfig() (config, error) {
 	hosts := strings.Split(os.Getenv("SCYLLA_HOSTS"), ",")
@@ -102,6 +122,7 @@ func main() {
 
 	authSvc := auth.NewService(cfg.AppSecret)
 	mediaSvc := media.NewService(session, cfg.Keyspace, cfg.MediaRoot, cfg.TmdbKey)
+	hlsMgr := newHlsManager()
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Logger, middleware.Recoverer)
@@ -125,6 +146,7 @@ func main() {
 		r.Get("/", handleListMedia(mediaSvc))
 		r.Get("/{id}", handleGetMedia(mediaSvc))
 		r.Get("/{id}/assets", handleGetAssets(mediaSvc))
+		r.Get("/{id}/tracks", handleAudioTracks(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 	})
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
@@ -149,6 +171,8 @@ func main() {
 	})
 
 	r.Get("/stream", handleStream(session, cfg.Keyspace, cfg.MediaRoot, authSvc))
+	r.With(authSvc.RequireAuth).Get("/stream/hls", handleStreamHLS(hlsMgr, session, cfg.Keyspace, cfg.MediaRoot))
+	r.Get("/hls/{session}/{file}", handleHLSFile(hlsMgr))
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
@@ -488,6 +512,101 @@ func handleStream(session *gocql.Session, keyspace, mediaRoot string, authSvc *a
 	}
 }
 
+func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			errorJSON(w, http.StatusBadRequest, "path required")
+			return
+		}
+		audioStr := r.URL.Query().Get("audio")
+		audioIndex := -1
+		if audioStr != "" {
+			if v, err := strconv.Atoi(audioStr); err == nil {
+				audioIndex = v
+			}
+		}
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, err := resolveStreamPath(path, roots)
+		if err != nil {
+			errorJSON(w, http.StatusForbidden, err.Error())
+			return
+		}
+		sess, err := mgr.Create(full, audioIndex)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"url": "/hls/" + sess.id + "/index.m3u8",
+		})
+	}
+}
+
+func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionID := chi.URLParam(r, "session")
+		file := chi.URLParam(r, "file")
+		if sessionID == "" || file == "" {
+			http.NotFound(w, r)
+			return
+		}
+		sess := mgr.Get(sessionID)
+		if sess == nil {
+			http.NotFound(w, r)
+			return
+		}
+		sess.lastAccess = time.Now()
+		clean := filepath.Clean(file)
+		if strings.Contains(clean, "..") || filepath.IsAbs(clean) {
+			http.NotFound(w, r)
+			return
+		}
+		full := filepath.Join(sess.dir, clean)
+		waitForFile(full, 5*time.Second)
+		http.ServeFile(w, r, full)
+	}
+}
+
+func handleAudioTracks(svc *media.Service, session *gocql.Session, keyspace, mediaRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			errorJSON(w, http.StatusBadRequest, "id required")
+			return
+		}
+		assets, err := svc.Assets(r.Context(), id)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(assets) == 0 {
+			errorJSON(w, http.StatusNotFound, "no assets")
+			return
+		}
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, err := resolveStreamPath(assets[0].Path, roots)
+		if err != nil {
+			errorJSON(w, http.StatusForbidden, err.Error())
+			return
+		}
+		tracks, err := probeAudioTracks(full)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, tracks)
+	}
+}
+
 func tokenFromRequest(r *http.Request) string {
 	authz := r.Header.Get("Authorization")
 	if authz != "" {
@@ -563,6 +682,164 @@ func isWithinRoot(path, root string) bool {
 	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
+type audioTrack struct {
+	Index      int    `json:"index"`
+	AudioIndex int    `json:"audio_index"`
+	Codec      string `json:"codec"`
+	Channels   int    `json:"channels"`
+	SampleRate string `json:"sample_rate"`
+	Language   string `json:"language"`
+	Title      string `json:"title"`
+}
+
+func probeAudioTracks(path string) ([]audioTrack, error) {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-select_streams", "a",
+		"-show_entries", "stream=index,codec_name,channels,sample_rate:stream_tags=language,title",
+		"-of", "json", path,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Streams []struct {
+			Index      int               `json:"index"`
+			CodecName  string            `json:"codec_name"`
+			Channels   int               `json:"channels"`
+			SampleRate string            `json:"sample_rate"`
+			Tags       map[string]string `json:"tags"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return nil, err
+	}
+	tracks := make([]audioTrack, 0, len(parsed.Streams))
+	for i, s := range parsed.Streams {
+		track := audioTrack{
+			Index:      s.Index,
+			AudioIndex: i,
+			Codec:      s.CodecName,
+			Channels:   s.Channels,
+			SampleRate: s.SampleRate,
+			Language:   s.Tags["language"],
+			Title:      s.Tags["title"],
+		}
+		tracks = append(tracks, track)
+	}
+	return tracks, nil
+}
+
+func newHlsManager() *hlsManager {
+	base := "/tmp/acecinema-hls"
+	_ = os.MkdirAll(base, 0o755)
+	m := &hlsManager{
+		baseDir:  base,
+		sessions: make(map[string]*hlsSession),
+	}
+	go m.cleanupLoop()
+	return m
+}
+
+func (m *hlsManager) Create(path string, audioIndex int) (*hlsSession, error) {
+	id := randomID()
+	dir := filepath.Join(m.baseDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	sess := &hlsSession{
+		id:         id,
+		path:       path,
+		audioIndex: audioIndex,
+		dir:        dir,
+		lastAccess: time.Now(),
+	}
+	m.mu.Lock()
+	m.sessions[id] = sess
+	m.mu.Unlock()
+	go m.startSession(sess)
+	return sess, nil
+}
+
+func (m *hlsManager) Get(id string) *hlsSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[id]
+}
+
+func (m *hlsManager) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		m.cleanupOld(30 * time.Minute)
+	}
+}
+
+func (m *hlsManager) cleanupOld(maxAge time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	for id, sess := range m.sessions {
+		if now.Sub(sess.lastAccess) > maxAge {
+			if sess.cmd != nil && sess.cmd.Process != nil {
+				_ = sess.cmd.Process.Kill()
+			}
+			_ = os.RemoveAll(sess.dir)
+			delete(m.sessions, id)
+		}
+	}
+}
+
+func (m *hlsManager) startSession(sess *hlsSession) {
+	mapAudio := "0:a:0?"
+	if sess.audioIndex >= 0 {
+		mapAudio = fmt.Sprintf("0:a:%d?", sess.audioIndex)
+	}
+	args := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-i", sess.path,
+		"-map", "0:v:0",
+		"-map", mapAudio,
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", "23",
+		"-c:a", "aac",
+		"-ac", "2",
+		"-b:a", "160k",
+		"-sn",
+		"-f", "hls",
+		"-hls_time", "6",
+		"-hls_list_size", "6",
+		"-hls_flags", "delete_segments+append_list+independent_segments",
+		"-hls_segment_filename", filepath.Join(sess.dir, "seg%03d.ts"),
+		filepath.Join(sess.dir, "index.m3u8"),
+	}
+	cmd := exec.Command("ffmpeg", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	sess.cmd = cmd
+	_ = cmd.Run()
+}
+
+func randomID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func waitForFile(path string, max time.Duration) {
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func parseConsistency(c string) gocql.Consistency {
 	switch strings.ToUpper(c) {
 	case "ONE":
@@ -585,6 +862,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
 <head>
   <meta charset="utf-8"/>
   <title>AceCinema</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.12"></script>
   <style>
     :root {
       --snow: #fffbfe;
@@ -781,6 +1059,16 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       font-size: 12px;
       border-top: 1px solid #2a2a2a;
     }
+    .player-ctrl {
+      background: #262626;
+      color: #fff;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      padding: 6px 10px;
+    }
+    .seek-bar { flex: 1; }
+    .volume-bar { width: 90px; }
+    .time-label { min-width: 90px; color: #cfcfcf; }
     .player-controls select {
       background: #1f1f1f;
       color: #fff;
@@ -867,12 +1155,16 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
         <div id="playerTitle">Lecture</div>
         <button id="playerClose" class="player-close">Fermer</button>
       </div>
-      <video id="playerVideo" controls playsinline></video>
+      <video id="playerVideo" playsinline></video>
       <div class="player-controls">
-        <div>Audio</div>
+        <button id="playToggle" class="player-ctrl">▶</button>
+        <div id="timeLabel" class="time-label">0:00 / 0:00</div>
+        <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" value="0"/>
+        <input id="volumeBar" class="volume-bar" type="range" min="0" max="1" step="0.05" value="1"/>
         <select id="audioSelect">
-          <option value="auto">Auto</option>
+          <option value="-1">Auto</option>
         </select>
+        <button id="fullscreenBtn" class="player-ctrl">⤢</button>
         <div id="audioHint" style="color:#bbb;"></div>
       </div>
     </div>
@@ -1008,8 +1300,11 @@ async function play(id, titleText){
   }
   const assets = await res.json();
   if(assets.length===0){setStatus('No assets for media', true); return;}
-  const url='/stream?path='+encodeURIComponent(assets[0].path)+'&token='+encodeURIComponent(access);
-  openPlayer(url, titleText || 'Lecture');
+  currentAssetPath = assets[0].path;
+  currentMediaId = id;
+  openPlayer(titleText || 'Lecture');
+  await loadAudioTracks(id);
+  await startHls(currentAssetPath, currentAudioIndex);
 }
 async function scanNow(){
   if (!access) { setStatus('Not logged in', true); return; }
@@ -1153,61 +1448,122 @@ const playerVideo = document.getElementById('playerVideo');
 const playerTitle = document.getElementById('playerTitle');
 const audioSelect = document.getElementById('audioSelect');
 const audioHint = document.getElementById('audioHint');
-function openPlayer(url, titleText){
+const playToggle = document.getElementById('playToggle');
+const seekBar = document.getElementById('seekBar');
+const volumeBar = document.getElementById('volumeBar');
+const timeLabel = document.getElementById('timeLabel');
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+let hls = null;
+let currentAssetPath = '';
+let currentMediaId = '';
+let currentAudioIndex = -1;
+function openPlayer(titleText){
   playerTitle.textContent = titleText;
-  playerVideo.src = url;
   playerVideo.muted = false;
   playerVideo.volume = 1;
   overlay.style.display = 'flex';
-  playerVideo.play().catch(()=>{});
 }
 function closePlayer(){
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
   playerVideo.pause();
   playerVideo.removeAttribute('src');
   playerVideo.load();
+  currentAssetPath = '';
+  currentMediaId = '';
   overlay.style.display = 'none';
 }
-function populateAudioTracks(){
-  audioSelect.innerHTML = '<option value="auto">Auto</option>';
+async function loadAudioTracks(mediaId){
+  audioSelect.innerHTML = '<option value="-1">Auto</option>';
   audioHint.textContent = '';
-  const tracks = playerVideo.audioTracks;
-  if (!tracks || tracks.length === 0) {
+  const res = await fetch('/media/'+mediaId+'/tracks',{headers:{Authorization:'Bearer '+access}});
+  if (!res.ok) {
     audioHint.textContent = 'Pistes audio non detectees';
     return;
   }
-  for (let i = 0; i < tracks.length; i++) {
-    const t = tracks[i];
-    const label = (t.label || t.language || ('Track ' + (i + 1)));
+  const tracks = await res.json();
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    audioHint.textContent = 'Pistes audio non detectees';
+    return;
+  }
+  tracks.forEach(t => {
+    const label = (t.language || '') + (t.title ? (' - ' + t.title) : '') + (t.codec ? (' [' + t.codec + ']') : '');
     const opt = document.createElement('option');
-    opt.value = String(i);
-    opt.textContent = label;
+    opt.value = String(t.audio_index);
+    opt.textContent = label.trim() || ('Track ' + t.index);
     audioSelect.appendChild(opt);
-  }
-  for (let i = 0; i < tracks.length; i++) {
-    if (tracks[i].enabled) {
-      audioSelect.value = String(i);
-      return;
-    }
-  }
+  });
+  const fr = tracks.find(t => (t.language || '').toLowerCase().startsWith('fr'));
+  currentAudioIndex = fr ? fr.audio_index : tracks[0].audio_index;
+  audioSelect.value = String(currentAudioIndex);
 }
-audioSelect.addEventListener('change', () => {
-  const tracks = playerVideo.audioTracks;
-  if (!tracks || tracks.length === 0) {
+async function startHls(path, audioIndex){
+  const url = '/stream/hls?path='+encodeURIComponent(path)+'&audio='+encodeURIComponent(audioIndex);
+  const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
+  if (!res.ok) {
+    setStatus('HLS failed: ' + res.status, true);
     return;
   }
-  if (audioSelect.value === 'auto') {
-    for (let i = 0; i < tracks.length; i++) {
-      tracks[i].enabled = (i === 0);
-    }
+  const data = await res.json();
+  if (!data.url) {
+    setStatus('HLS url missing', true);
     return;
   }
-  const idx = parseInt(audioSelect.value, 10);
-  for (let i = 0; i < tracks.length; i++) {
-    tracks[i].enabled = (i === idx);
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls();
+    hls.loadSource(data.url);
+    hls.attachMedia(playerVideo);
+  } else {
+    playerVideo.src = data.url;
+  }
+  playerVideo.play().catch(()=>{});
+}
+audioSelect.addEventListener('change', async () => {
+  const val = parseInt(audioSelect.value, 10);
+  currentAudioIndex = isNaN(val) ? -1 : val;
+  if (currentAssetPath) {
+    await startHls(currentAssetPath, currentAudioIndex);
   }
 });
-playerVideo.addEventListener('loadedmetadata', populateAudioTracks);
-playerVideo.addEventListener('loadeddata', populateAudioTracks);
+function formatTime(seconds){
+  if (!isFinite(seconds)) { return '0:00'; }
+  const s = Math.floor(seconds % 60);
+  const m = Math.floor(seconds / 60);
+  return m + ':' + (s < 10 ? '0' + s : s);
+}
+playerVideo.addEventListener('timeupdate', () => {
+  if (!isFinite(playerVideo.duration)) { return; }
+  const pct = (playerVideo.currentTime / playerVideo.duration) * 1000;
+  seekBar.value = String(Math.floor(pct));
+  timeLabel.textContent = formatTime(playerVideo.currentTime) + ' / ' + formatTime(playerVideo.duration);
+});
+seekBar.addEventListener('input', () => {
+  if (!isFinite(playerVideo.duration)) { return; }
+  const pct = parseInt(seekBar.value, 10) / 1000;
+  playerVideo.currentTime = playerVideo.duration * pct;
+});
+volumeBar.addEventListener('input', () => {
+  playerVideo.volume = parseFloat(volumeBar.value);
+});
+playToggle.addEventListener('click', () => {
+  if (playerVideo.paused) { playerVideo.play(); } else { playerVideo.pause(); }
+});
+playerVideo.addEventListener('play', () => { playToggle.textContent = '⏸'; });
+playerVideo.addEventListener('pause', () => { playToggle.textContent = '▶'; });
+fullscreenBtn.addEventListener('click', () => {
+  const el = document.querySelector('.player-shell');
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else if (el && el.requestFullscreen) {
+    el.requestFullscreen();
+  }
+});
 document.getElementById('playerClose').addEventListener('click', closePlayer);
 overlay.addEventListener('click', (e) => {
   if (e.target === overlay) closePlayer();
