@@ -2928,6 +2928,18 @@ async function startHls(path, audioIndex){
   pendingSeekTime = null;
   currentHlsSession = '';
   currentHlsUrl = '';
+  let didAutoPlay = false;
+  const tryAutoPlay = () => {
+    if (didAutoPlay) return;
+    const buffered = playerVideo.buffered;
+    if (!buffered || buffered.length === 0) return;
+    const end = buffered.end(buffered.length - 1);
+    const ahead = end - playerVideo.currentTime;
+    if (ahead >= 4) {
+      didAutoPlay = true;
+      playerVideo.play().catch(err => console.error('play failed', err));
+    }
+  };
   if (hls) {
     hls.destroy();
     hls = null;
@@ -2980,6 +2992,9 @@ async function startHls(path, audioIndex){
       backBufferLength: 90,
       maxBufferSize: 256 * 1000 * 1000
     });
+    hls.on(Hls.Events.FRAG_BUFFERED, () => {
+      tryAutoPlay();
+    });
     hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
       if (!data || !data.details) return;
       const total = parseFloat(data.details.totalduration || 0);
@@ -3010,10 +3025,11 @@ async function startHls(path, audioIndex){
     });
     hls.loadSource(data.url);
     hls.attachMedia(playerVideo);
+    playerVideo.addEventListener('canplay', tryAutoPlay);
   } else {
     playerVideo.src = data.url;
+    playerVideo.addEventListener('canplay', tryAutoPlay);
   }
-  playerVideo.play().catch(err => console.error('play failed', err));
 }
 audioSelect.addEventListener('change', async () => {
   const val = parseInt(audioSelect.value, 10);
