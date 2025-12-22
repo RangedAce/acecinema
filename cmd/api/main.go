@@ -910,7 +910,7 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		mapAudio = fmt.Sprintf("0:a:%d?", sess.audioIndex)
 	}
 	args := []string{
-		"-hide_banner", "-loglevel", "error",
+		"-hide_banner", "-loglevel", "info",
 		"-i", sess.path,
 		"-map", "0:v:0",
 		"-map", mapAudio,
