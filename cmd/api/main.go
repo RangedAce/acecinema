@@ -34,6 +34,8 @@ type config struct {
 	Replication int
 }
 
+var buildVersion = envDefault("BUILD_VERSION", "dev")
+
 func loadConfig() (config, error) {
 	hosts := strings.Split(os.Getenv("SCYLLA_HOSTS"), ",")
 	for i := range hosts {
@@ -797,6 +799,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
         </div>
       </div>
     </div>
+    <div style="margin-top:20px; color: var(--grey); font-size: 12px;">Build: `+buildVersion+`</div>
   </div>
   <div id="playerOverlay" class="player-overlay">
     <div class="player-shell">
