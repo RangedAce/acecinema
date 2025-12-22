@@ -602,7 +602,7 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 			return
 		}
 		full := filepath.Join(sess.dir, clean)
-		if !waitForFile(full, 12*time.Second) {
+		if !waitForFile(full, 40*time.Second) {
 			http.NotFound(w, r)
 			return
 		}
@@ -905,6 +905,16 @@ func (m *hlsManager) cleanupOld(maxAge time.Duration) {
 
 func (m *hlsManager) startSession(sess *hlsSession) {
 	log.Printf("hls start: path=%s audio=%d dir=%s", sess.path, sess.audioIndex, sess.dir)
+
+	// DEBUG: test basic command execution on the path
+	debugCmd := exec.Command("ls", "-l", sess.path)
+	debugOut, debugErr := debugCmd.CombinedOutput()
+	if debugErr != nil {
+		log.Printf("!!! DEBUG ls command failed: %v", debugErr)
+	}
+	log.Printf("!!! DEBUG ls output: %s", string(debugOut))
+	// END DEBUG
+
 	mapAudio := "0:a:0?"
 	if sess.audioIndex >= 0 {
 		mapAudio = fmt.Sprintf("0:a:%d?", sess.audioIndex)
