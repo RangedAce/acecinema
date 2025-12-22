@@ -2723,7 +2723,7 @@ async function openDetails(item) {
   buildSimilarRow(item);
   detailsPlay.onclick = () => {
     closeDetails();
-    play(item.id, titleText);
+    play(item.id, titleText, item.progress_ms || 0);
   };
   detailsAdd.onclick = () => setStatus('Ajoute a la liste (placeholder)', false);
   detailsOverlay.classList.remove('hidden');
@@ -2826,9 +2826,10 @@ function createMediaCard(m) {
   const btn = document.createElement('button');
   btn.className = 'play-btn';
   btn.innerHTML = '&#9654;';
+  const resumeMs = m.progress_ms || 0;
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    play(m.id, titleText);
+    play(m.id, titleText, resumeMs);
   });
   el.appendChild(title);
   el.appendChild(year);
@@ -3061,12 +3062,13 @@ async function loadContinue() {
       return;
     }
     continueItems = items;
+    renderContinue(continueItems.map(entry => Object.assign({}, entry.item || {}, { progress_ms: entry.position_ms || 0 })));
   } catch (err) {
     console.error('continue load failed', err);
     continueItems = [];
   }
 }
-async function play(id, titleText){
+async function play(id, titleText, resumeMs){
   if (!access) { setStatus('Not logged in', true); return; }
   currentMediaId = id;
   catalogDuration = 0;
@@ -3076,7 +3078,8 @@ async function play(id, titleText){
   lastProgressSentMs = 0;
   openPlayer(titleText || 'Lecture');
   await loadAudioTracks(id);
-  await startPlayback(id, 0);
+  const resumeSec = Math.max(0, (resumeMs || 0) / 1000);
+  await startPlayback(id, resumeSec);
   await loadPlaybackInfo(id);
 }
 async function loadPlaybackInfo(mediaId) {
@@ -3618,13 +3621,14 @@ function updateRangeFill(range){
   const pctClamped = Math.min(Math.max(pct, 0), 1);
   range.style.setProperty('--fill-percent', (pctClamped * 100).toFixed(2) + '%');
 }
-async function sendProgress(posMs){
+async function sendProgress(posMs, force){
   if (!currentMediaId || !access) return;
   try {
     await fetch('/progress', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + access },
-      body: JSON.stringify({ media_id: currentMediaId, position_ms: posMs })
+      body: JSON.stringify({ media_id: currentMediaId, position_ms: posMs }),
+      keepalive: !!force
     });
   } catch (err) {
     console.error('progress update failed', err);
@@ -3641,7 +3645,7 @@ function maybeSendProgress(force){
   }
   lastProgressSentAt = now;
   lastProgressSentMs = posMs;
-  sendProgress(posMs);
+  sendProgress(posMs, force);
 }
 function getDuration(){
   if (currentStreamMode === 'hls' && catalogDuration > 0) {
@@ -3913,6 +3917,14 @@ document.addEventListener('fullscreenchange', () => {
   } else {
     playerShell.classList.add('controls-visible');
   }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    maybeSendProgress(true);
+  }
+});
+window.addEventListener('beforeunload', () => {
+  maybeSendProgress(true);
 });
 document.getElementById('playerClose').addEventListener('click', closePlayer);
 overlay.addEventListener('click', (e) => {
