@@ -1198,18 +1198,18 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       align-items: center;
       justify-content: center;
       z-index: 999;
-      padding: 20px;
+      /* padding: 20px; */
     }
     .player-shell {
-      width: min(960px, 100%);
+      width: 100%;
+      height: 100%;
       background: #000;
-      border-radius: 16px;
+      border-radius: 0;
       overflow: hidden;
-      border: 1px solid #333;
+      border: none;
       position: relative;
       display: flex;
       flex-direction: column;
-      max-height: 90vh;
     }
     .player-controls {
       display: flex;
@@ -1228,116 +1228,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       pointer-events: none;
       transition: opacity 0.2s ease;
     }
-    .player-shell.controls-visible .player-controls,
     .player-shell.controls-visible .player-bar {
       opacity: 1;
       pointer-events: auto;
     }
-    .player-shell.is-fullscreen {
-      width: 100%;
-      height: 100%;
-      border-radius: 0;
-    }
-    .player-shell.is-fullscreen video {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
-    .player-ctrl {
-      background: #262626;
-      color: #fff;
-      border: 1px solid #3a3a3a;
-      border-radius: 8px;
-      padding: 6px 10px;
-      cursor: pointer;
-    }
-    .player-ctrl:active,
-    .player-close:active {
-      transform: translateY(1px);
-    }
-    .seek-bar { flex: 1; }
-    .volume-bar { width: 110px; }
-    .time-label { min-width: 90px; color: #cfcfcf; }
-    input[type=range] {
-      -webkit-appearance: none;
-      appearance: none;
-      height: 6px;
-      background: transparent;
-      outline: none;
-      padding: 0;
-      margin: 0;
-      border: none;
-      --thumb-size: 14px;
-      --track-color: #2f2f2f;
-      --fill-color: #000;
-    }
-    input[type=range]::-webkit-slider-runnable-track {
-      height: 6px;
-      border-radius: 999px;
-      background: linear-gradient(90deg, var(--fill-color) 0, var(--fill-color) var(--fill-px, 0px), var(--track-color) var(--fill-px, 0px), var(--track-color) 100%);
-    }
-    input[type=range]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: var(--thumb-size);
-      height: var(--thumb-size);
-      border-radius: 50%;
-      background: #d0cfcf;
-      border: 1px solid #3a3a3a;
-      margin-top: -4px;
-    }
-    input[type=range]::-moz-range-track {
-      height: 6px;
-      border-radius: 999px;
-      background: var(--track-color);
-    }
-    input[type=range]::-moz-range-progress {
-      height: 6px;
-      border-radius: 999px;
-      background: var(--fill-color);
-    }
-    input[type=range]::-moz-range-thumb {
-      width: var(--thumb-size);
-      height: var(--thumb-size);
-      border-radius: 50%;
-      background: #d0cfcf;
-      border: 1px solid #3a3a3a;
-    }
-    .player-controls select {
-      background: #1f1f1f;
-      color: #fff;
-      border: 1px solid #2f2f2f;
-      border-radius: 8px;
-      padding: 6px 8px;
-      font-size: 12px;
-    }
-    .player-bar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 12px;
-      background: #000;
-      color: #fff;
-      font-size: 13px;
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: 0;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease;
-      z-index: 2;
-    }
-    .player-close {
-      background: #2b2b2b;
-      color: #fff;
-      border: 1px solid #3a3a3a;
-      cursor: pointer;
-    }
     .player-controls {
       z-index: 2;
     }
-    video { width: 100%; height: auto; max-height: 90vh; object-fit: contain; display: block; background: #000; }
+    video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
     @media (max-width: 640px) {
       .row { flex-direction: column; align-items: stretch; }
       input { min-width: 100%; }
