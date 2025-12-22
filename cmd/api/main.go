@@ -2512,10 +2512,6 @@ function renderHome(list) {
 }
 function applySearch() {
   const q = searchQuery.trim().toLowerCase();
-  if (!q) {
-    renderHome(mediaCache);
-    return;
-  }
   const filtered = mediaCache.filter(m => {
     const meta = m.metadata || {};
     const hay = [
@@ -2528,6 +2524,7 @@ function applySearch() {
       meta.overview,
       String(m.year || meta.year || '')
     ].join(' ').toLowerCase();
+    if (!q) return true;
     return hay.includes(q);
   });
   const typed = filtered.filter(m => {
@@ -2821,6 +2818,7 @@ let isFullscreen = false;
 let isSeeking = false;
 let seekPointerActive = false;
 let pendingSeekTime = null;
+let hlsBaseOffset = 0;
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
@@ -2847,6 +2845,8 @@ function closePlayer(){
   currentHlsSession = '';
   currentHlsUrl = '';
   hlsDuration = 0;
+  hlsBaseOffset = 0;
+  pendingSeekTime = null;
   if (controlsTimer) {
     clearTimeout(controlsTimer);
     controlsTimer = null;
@@ -2889,6 +2889,8 @@ async function loadAudioTracks(mediaId){
 }
 async function startHls(path, audioIndex){
   hlsDuration = 0;
+  hlsBaseOffset = 0;
+  pendingSeekTime = null;
   currentHlsSession = '';
   currentHlsUrl = '';
   if (hls) {
@@ -2946,14 +2948,22 @@ async function startHls(path, audioIndex){
     hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
       if (!data || !data.details) return;
       const total = parseFloat(data.details.totalduration || 0);
+      if (data.details.fragments && data.details.fragments.length > 0) {
+        const base = parseFloat(data.details.fragments[0].start || 0);
+        if (isFinite(base) && base >= 0) {
+          hlsBaseOffset = base;
+        }
+      }
       if (isFinite(total) && total > 0) {
-        hlsDuration = total;
-        seekBar.max = total.toFixed(2);
+        if (!hlsDuration || total > hlsDuration) {
+          hlsDuration = total;
+        }
+      }
+      if (hlsDuration > 0) {
+        seekBar.max = hlsDuration.toFixed(2);
         updateRangeFill(seekBar);
         if (pendingSeekTime !== null) {
-          const next = Math.min(Math.max(pendingSeekTime, 0), total);
-          playerVideo.currentTime = next;
-          pendingSeekTime = null;
+          requestSeek(pendingSeekTime);
         }
       }
     });
@@ -3013,6 +3023,21 @@ function getDuration(){
   }
   return 0;
 }
+function getGlobalTime(){
+  const base = hlsBaseOffset || 0;
+  return playerVideo.currentTime + base;
+}
+function requestSeek(target){
+  const duration = getDuration();
+  if (!duration || !isFinite(duration)) {
+    pendingSeekTime = target;
+    return;
+  }
+  const clamped = Math.min(Math.max(target, 0), duration);
+  const local = hlsBaseOffset ? Math.max(0, clamped - hlsBaseOffset) : clamped;
+  playerVideo.currentTime = local;
+  pendingSeekTime = null;
+}
 function seekFromPointer(evt){
   const duration = getDuration();
   if (!duration) return 0;
@@ -3030,18 +3055,16 @@ function seekFromPointer(evt){
     if (!duration) { return; }
     seekBar.max = duration.toFixed(2);
     updateRangeFill(seekBar);
-    timeLabel.textContent = formatTime(playerVideo.currentTime) + ' / ' + formatTime(duration);
+    timeLabel.textContent = formatTime(getGlobalTime()) + ' / ' + formatTime(duration);
     if (pendingSeekTime !== null) {
-      const next = Math.min(Math.max(pendingSeekTime, 0), duration);
-      playerVideo.currentTime = next;
-      pendingSeekTime = null;
+      requestSeek(pendingSeekTime);
     }
   });
   playerVideo.addEventListener('timeupdate', () => {
     if (isSeeking) return;
     const duration = getDuration();
     if (!duration) { return; }
-    const pos = Math.min(Math.max(playerVideo.currentTime, 0), duration);
+    const pos = Math.min(Math.max(getGlobalTime(), 0), duration);
     seekBar.max = duration.toFixed(2);
     seekBar.value = pos.toFixed(2);
     updateRangeFill(seekBar);
@@ -3069,12 +3092,7 @@ seekBar.addEventListener('pointerdown', (e) => {
   isSeeking = true;
   seekBar.setPointerCapture(e.pointerId);
   const value = seekFromPointer(e);
-  const duration = getDuration();
-  if (duration) {
-    playerVideo.currentTime = value;
-  } else {
-    pendingSeekTime = value;
-  }
+  requestSeek(value);
 });
 seekBar.addEventListener('pointermove', (e) => {
   if (!seekPointerActive) return;
@@ -3083,12 +3101,7 @@ seekBar.addEventListener('pointermove', (e) => {
 seekBar.addEventListener('pointerup', (e) => {
   if (!seekPointerActive) return;
   const value = seekFromPointer(e);
-  const duration = getDuration();
-  if (duration) {
-    playerVideo.currentTime = value;
-  } else {
-    pendingSeekTime = value;
-  }
+  requestSeek(value);
   if (seekBar.hasPointerCapture(e.pointerId)) {
     seekBar.releasePointerCapture(e.pointerId);
   }
@@ -3104,12 +3117,7 @@ seekBar.addEventListener('pointercancel', (e) => {
 });
 seekBar.addEventListener('click', (e) => {
   const value = seekFromPointer(e);
-  const duration = getDuration();
-  if (duration) {
-    playerVideo.currentTime = value;
-  } else {
-    pendingSeekTime = value;
-  }
+  requestSeek(value);
 });
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
