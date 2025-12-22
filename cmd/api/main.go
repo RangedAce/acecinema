@@ -568,6 +568,10 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 		}
 		full := filepath.Join(sess.dir, clean)
 		waitForFile(full, 5*time.Second)
+		if _, err := os.Stat(full); err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		http.ServeFile(w, r, full)
 	}
 }
@@ -743,6 +747,9 @@ func newHlsManager() *hlsManager {
 }
 
 func (m *hlsManager) Create(path string, audioIndex int) (*hlsSession, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
 	id := randomID()
 	dir := filepath.Join(m.baseDir, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -792,6 +799,7 @@ func (m *hlsManager) cleanupOld(maxAge time.Duration) {
 }
 
 func (m *hlsManager) startSession(sess *hlsSession) {
+	log.Printf("hls start: path=%s audio=%d dir=%s", sess.path, sess.audioIndex, sess.dir)
 	mapAudio := "0:a:0?"
 	if sess.audioIndex >= 0 {
 		mapAudio = fmt.Sprintf("0:a:%d?", sess.audioIndex)
@@ -819,7 +827,9 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	sess.cmd = cmd
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		log.Printf("hls ffmpeg exit: %v", err)
+	}
 }
 
 func randomID() string {
@@ -1517,6 +1527,9 @@ async function startHls(path, audioIndex){
   }
   if (window.Hls && Hls.isSupported()) {
     hls = new Hls();
+    hls.on(Hls.Events.ERROR, (event, data) => {
+      console.error('hls error', data);
+    });
     hls.loadSource(data.url);
     hls.attachMedia(playerVideo);
   } else {
