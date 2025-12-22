@@ -768,9 +768,6 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       </div>
     </div>
     <div id="appShell" class="hidden">
-      <div class="panel">
-        <div class="meta">Console: status + token</div>
-      </div>
       <div id="homeView" class="view">
         <div id="media" class="grid"></div>
       </div>
