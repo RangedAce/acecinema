@@ -771,6 +771,24 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       overflow: hidden;
       border: 1px solid #333;
     }
+    .player-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 12px;
+      background: #161616;
+      color: #fff;
+      font-size: 12px;
+      border-top: 1px solid #2a2a2a;
+    }
+    .player-controls select {
+      background: #1f1f1f;
+      color: #fff;
+      border: 1px solid #2f2f2f;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
     .player-bar {
       display: flex;
       justify-content: space-between;
@@ -850,6 +868,13 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
         <button id="playerClose" class="player-close">Fermer</button>
       </div>
       <video id="playerVideo" controls playsinline></video>
+      <div class="player-controls">
+        <div>Audio</div>
+        <select id="audioSelect">
+          <option value="auto">Auto</option>
+        </select>
+        <div id="audioHint" style="color:#bbb;"></div>
+      </div>
     </div>
   </div>
 <script>
@@ -1126,6 +1151,8 @@ document.addEventListener('click', (e) => {
 const overlay = document.getElementById('playerOverlay');
 const playerVideo = document.getElementById('playerVideo');
 const playerTitle = document.getElementById('playerTitle');
+const audioSelect = document.getElementById('audioSelect');
+const audioHint = document.getElementById('audioHint');
 function openPlayer(url, titleText){
   playerTitle.textContent = titleText;
   playerVideo.src = url;
@@ -1140,6 +1167,47 @@ function closePlayer(){
   playerVideo.load();
   overlay.style.display = 'none';
 }
+function populateAudioTracks(){
+  audioSelect.innerHTML = '<option value="auto">Auto</option>';
+  audioHint.textContent = '';
+  const tracks = playerVideo.audioTracks;
+  if (!tracks || tracks.length === 0) {
+    audioHint.textContent = 'Pistes audio non detectees';
+    return;
+  }
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i];
+    const label = (t.label || t.language || ('Track ' + (i + 1)));
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = label;
+    audioSelect.appendChild(opt);
+  }
+  for (let i = 0; i < tracks.length; i++) {
+    if (tracks[i].enabled) {
+      audioSelect.value = String(i);
+      return;
+    }
+  }
+}
+audioSelect.addEventListener('change', () => {
+  const tracks = playerVideo.audioTracks;
+  if (!tracks || tracks.length === 0) {
+    return;
+  }
+  if (audioSelect.value === 'auto') {
+    for (let i = 0; i < tracks.length; i++) {
+      tracks[i].enabled = (i === 0);
+    }
+    return;
+  }
+  const idx = parseInt(audioSelect.value, 10);
+  for (let i = 0; i < tracks.length; i++) {
+    tracks[i].enabled = (i === idx);
+  }
+});
+playerVideo.addEventListener('loadedmetadata', populateAudioTracks);
+playerVideo.addEventListener('loadeddata', populateAudioTracks);
 document.getElementById('playerClose').addEventListener('click', closePlayer);
 overlay.addEventListener('click', (e) => {
   if (e.target === overlay) closePlayer();
