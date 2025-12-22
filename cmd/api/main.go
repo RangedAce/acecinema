@@ -161,7 +161,7 @@ func main() {
 	})
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
-	r.With(authSvc.RequireAuth).Get("/progress/continue", handleListProgress(mediaSvc))
+	r.With(authSvc.RequireAuth).Get("/progress/continue", handleListProgress(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(authSvc.RequireRole("admin"))
@@ -427,7 +427,7 @@ func handleUpdateProgress(svc *media.Service) http.HandlerFunc {
 	}
 }
 
-func handleListProgress(svc *media.Service) http.HandlerFunc {
+func handleListProgress(svc *media.Service, session *gocql.Session, keyspace, mediaRoot string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := auth.ClaimsFromContext(r.Context())
 		if claims == nil || claims.UserID == "" {
@@ -439,7 +439,36 @@ func handleListProgress(svc *media.Service) http.HandlerFunc {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, items)
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		type resp struct {
+			Item        media.Item `json:"item"`
+			PositionMs  int64      `json:"position_ms"`
+			UpdatedAt   time.Time  `json:"updated_at"`
+			DurationSec float64    `json:"duration_sec"`
+		}
+		out := make([]resp, 0, len(items))
+		for _, entry := range items {
+			duration := 0.0
+			assets, err := svc.Assets(r.Context(), entry.Item.ID)
+			if err == nil && len(assets) > 0 {
+				if full, err := resolveStreamPath(assets[0].Path, roots); err == nil {
+					if durationStr, err := probeDuration(full); err == nil {
+						duration = parseDurationValue(durationStr)
+					}
+				}
+			}
+			out = append(out, resp{
+				Item:        entry.Item,
+				PositionMs:  entry.PositionMs,
+				UpdatedAt:   entry.UpdatedAt,
+				DurationSec: duration,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 
@@ -2771,6 +2800,14 @@ function getItemDurationSec(m) {
   if (isFinite(runtimeMin) && runtimeMin > 0) {
     return runtimeMin * 60;
   }
+  const fromResponse = parseFloat(m.duration_sec || 0);
+  if (isFinite(fromResponse) && fromResponse > 0) {
+    return fromResponse;
+  }
+  const durationMs = parseFloat(m.duration_ms || 0);
+  if (isFinite(durationMs) && durationMs > 0) {
+    return durationMs / 1000;
+  }
   const runtimeSec = parseFloat(meta.duration || 0);
   if (isFinite(runtimeSec) && runtimeSec > 0) {
     return runtimeSec;
@@ -2952,7 +2989,10 @@ function applySearch() {
   const filtered = mediaCache.filter(m => matchesQuery(m, q)).filter(matchesType);
   renderHome(filtered);
   const cont = continueItems
-    .map(entry => Object.assign({}, entry.item || {}, { progress_ms: entry.position_ms || 0 }))
+    .map(entry => Object.assign({}, entry.item || {}, {
+      progress_ms: entry.position_ms || 0,
+      duration_sec: entry.duration_sec || 0
+    }))
     .filter(m => matchesQuery(m, q))
     .filter(matchesType);
   renderContinue(cont);
@@ -3062,7 +3102,10 @@ async function loadContinue() {
       return;
     }
     continueItems = items;
-    renderContinue(continueItems.map(entry => Object.assign({}, entry.item || {}, { progress_ms: entry.position_ms || 0 })));
+    renderContinue(continueItems.map(entry => Object.assign({}, entry.item || {}, {
+      progress_ms: entry.position_ms || 0,
+      duration_sec: entry.duration_sec || 0
+    })));
   } catch (err) {
     console.error('continue load failed', err);
     continueItems = [];
