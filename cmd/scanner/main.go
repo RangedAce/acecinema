@@ -63,7 +63,8 @@ func main() {
 	defer session.Close()
 
 	mediaRoot := env("MEDIA_ROOT", "")
-	svc := media.NewService(session, keyspace, mediaRoot)
+	tmdbKey := os.Getenv("TMDB_API_KEY")
+	svc := media.NewService(session, keyspace, mediaRoot, tmdbKey)
 	interval := envDuration("SCAN_INTERVAL", 10*time.Minute)
 
 	log.Printf("scanner starting (media_root=%s, interval=%s)", mediaRoot, interval)

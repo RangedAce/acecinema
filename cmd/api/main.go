@@ -27,6 +27,7 @@ type config struct {
 	AdminEmail  string
 	AdminPass   string
 	MediaRoot   string
+	TmdbKey     string
 	ScyllaHosts []string
 	ScyllaPort  int
 	Keyspace    string
@@ -47,6 +48,7 @@ func loadConfig() (config, error) {
 		AdminEmail:  os.Getenv("ADMIN_EMAIL"),
 		AdminPass:   os.Getenv("ADMIN_PASSWORD"),
 		MediaRoot:   envDefault("MEDIA_ROOT", ""),
+		TmdbKey:     os.Getenv("TMDB_API_KEY"),
 		ScyllaHosts: hosts,
 		ScyllaPort:  envDefaultInt("SCYLLA_PORT", 9042),
 		Keyspace:    envDefault("SCYLLA_KEYSPACE", "acecinema"),
@@ -99,7 +101,7 @@ func main() {
 	defer session.Close()
 
 	authSvc := auth.NewService(cfg.AppSecret)
-	mediaSvc := media.NewService(session, cfg.Keyspace, cfg.MediaRoot)
+	mediaSvc := media.NewService(session, cfg.Keyspace, cfg.MediaRoot, cfg.TmdbKey)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Logger, middleware.Recoverer)

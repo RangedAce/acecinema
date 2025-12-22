@@ -2,8 +2,12 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +44,11 @@ type Service struct {
 	session   *gocql.Session
 	keyspace  string
 	mediaRoot string
+	tmdbKey   string
 }
 
-func NewService(session *gocql.Session, keyspace, mediaRoot string) *Service {
-	return &Service{session: session, keyspace: keyspace, mediaRoot: mediaRoot}
+func NewService(session *gocql.Session, keyspace, mediaRoot, tmdbKey string) *Service {
+	return &Service{session: session, keyspace: keyspace, mediaRoot: mediaRoot, tmdbKey: tmdbKey}
 }
 
 func (s *Service) List(ctx context.Context, query string, limit int) ([]Item, error) {
@@ -186,6 +191,9 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 				gocql.TimeUUID(), mediaID, absPath, info.Size(), filepath.Ext(absPath)).WithContext(ctx).Exec(); err != nil {
 				return err
 			}
+			if err := s.enrichMetadata(ctx, mediaID, absPath, title, year); err != nil {
+				return err
+			}
 			if relPath != "" {
 				if err := s.ensurePathAlias(ctx, relPath, mediaID); err != nil {
 					return err
@@ -276,6 +284,204 @@ func (s *Service) ensurePathAlias(ctx context.Context, path string, mediaID gocq
 		return fmt.Errorf("path alias already mapped to another media")
 	}
 	return nil
+}
+
+func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePath, title string, year int) error {
+	nfoTitle, nfoYear, imdbID := readNFO(filePath)
+	updatedTitle := title
+	updatedYear := year
+	if nfoTitle != "" {
+		updatedTitle = nfoTitle
+	}
+	if nfoYear > 0 {
+		updatedYear = nfoYear
+	}
+	if updatedTitle != title || updatedYear != year {
+		if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET title=?, year=? WHERE id=?`, s.keyspace),
+			updatedTitle, updatedYear, mediaID).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
+	}
+	if s.tmdbKey == "" {
+		if imdbID != "" {
+			if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=? WHERE id=?`, s.keyspace),
+				map[string]string{"imdb_id": imdbID}, mediaID).WithContext(ctx).Exec(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	meta, poster, err := s.fetchTmdbMetadata(updatedTitle, updatedYear, imdbID)
+	if err != nil {
+		return nil
+	}
+	if len(meta) == 0 && poster == "" {
+		return nil
+	}
+	if poster != "" {
+		return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=?, poster_url=? WHERE id=?`, s.keyspace),
+			meta, poster, mediaID).WithContext(ctx).Exec()
+	}
+	return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=? WHERE id=?`, s.keyspace),
+		meta, mediaID).WithContext(ctx).Exec()
+}
+
+func readNFO(filePath string) (string, int, string) {
+	dir := filepath.Dir(filePath)
+	base := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+	candidates := []string{
+		filepath.Join(dir, base+".nfo"),
+		filepath.Join(dir, "movie.nfo"),
+	}
+	for _, c := range candidates {
+		data, err := os.ReadFile(c)
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		title := extractTag(text, "title")
+		yearStr := extractTag(text, "year")
+		imdbID := extractTag(text, "imdbid")
+		if imdbID == "" {
+			imdbID = extractTag(text, "imdb_id")
+		}
+		year := 0
+		if yearStr != "" {
+			fmt.Sscanf(yearStr, "%d", &year)
+		}
+		return strings.TrimSpace(title), year, strings.TrimSpace(imdbID)
+	}
+	return "", 0, ""
+}
+
+func extractTag(text, tag string) string {
+	low := strings.ToLower(text)
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(low, open)
+	if start == -1 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(low[start:], close)
+	if end == -1 {
+		return ""
+	}
+	return text[start : start+end]
+}
+
+func (s *Service) fetchTmdbMetadata(title string, year int, imdbID string) (map[string]string, string, error) {
+	if s.tmdbKey == "" {
+		return nil, "", fmt.Errorf("tmdb key missing")
+	}
+	if imdbID != "" {
+		if meta, poster, err := s.tmdbFindByImdb(imdbID); err == nil {
+			return meta, poster, nil
+		}
+	}
+	return s.tmdbSearchMovie(title, year)
+}
+
+func (s *Service) tmdbFindByImdb(imdbID string) (map[string]string, string, error) {
+	endpoint := "https://api.themoviedb.org/3/find/" + url.PathEscape(imdbID)
+	params := url.Values{}
+	params.Set("api_key", s.tmdbKey)
+	params.Set("external_source", "imdb_id")
+	reqURL := endpoint + "?" + params.Encode()
+	body, err := getJSON(reqURL)
+	if err != nil {
+		return nil, "", err
+	}
+	var out struct {
+		MovieResults []struct {
+			ID          int    `json:"id"`
+			Title       string `json:"title"`
+			ReleaseDate string `json:"release_date"`
+			Overview    string `json:"overview"`
+			PosterPath  string `json:"poster_path"`
+		} `json:"movie_results"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, "", err
+	}
+	if len(out.MovieResults) == 0 {
+		return nil, "", fmt.Errorf("tmdb not found")
+	}
+	m := out.MovieResults[0]
+	meta := map[string]string{
+		"title":     m.Title,
+		"year":      yearFromDate(m.ReleaseDate),
+		"plot":      m.Overview,
+		"tmdb_id":   fmt.Sprintf("%d", m.ID),
+		"imdb_id":   imdbID,
+		"type":      "movie",
+	}
+	return meta, tmdbPosterURL(m.PosterPath), nil
+}
+
+func (s *Service) tmdbSearchMovie(title string, year int) (map[string]string, string, error) {
+	endpoint := "https://api.themoviedb.org/3/search/movie"
+	params := url.Values{}
+	params.Set("api_key", s.tmdbKey)
+	params.Set("query", title)
+	if year > 0 {
+		params.Set("year", fmt.Sprintf("%d", year))
+	}
+	reqURL := endpoint + "?" + params.Encode()
+	body, err := getJSON(reqURL)
+	if err != nil {
+		return nil, "", err
+	}
+	var out struct {
+		Results []struct {
+			ID          int    `json:"id"`
+			Title       string `json:"title"`
+			ReleaseDate string `json:"release_date"`
+			Overview    string `json:"overview"`
+			PosterPath  string `json:"poster_path"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, "", err
+	}
+	if len(out.Results) == 0 {
+		return nil, "", fmt.Errorf("tmdb not found")
+	}
+	m := out.Results[0]
+	meta := map[string]string{
+		"title":   m.Title,
+		"year":    yearFromDate(m.ReleaseDate),
+		"plot":    m.Overview,
+		"tmdb_id": fmt.Sprintf("%d", m.ID),
+		"type":    "movie",
+	}
+	return meta, tmdbPosterURL(m.PosterPath), nil
+}
+
+func getJSON(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func tmdbPosterURL(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	return "https://image.tmdb.org/t/p/w500" + path
+}
+
+func yearFromDate(date string) string {
+	if len(date) < 4 {
+		return ""
+	}
+	return date[:4]
 }
 
 func isVideo(path string) bool {
