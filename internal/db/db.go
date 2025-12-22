@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -22,6 +23,7 @@ type Library struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
+	Kind      string    `json:"kind"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -72,6 +74,7 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 			id uuid PRIMARY KEY,
 			name text,
 			path text,
+			kind text,
 			created_at timestamp
 		)`, keyspace),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS libraries_path_idx ON %s.libraries (path)`, keyspace),
@@ -81,7 +84,22 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 			return err
 		}
 	}
+	if err := ensureLibraryKindColumn(session, keyspace); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureLibraryKindColumn(session *gocql.Session, keyspace string) error {
+	err := session.Query(fmt.Sprintf(`ALTER TABLE %s.libraries ADD kind text`, keyspace)).Exec()
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "already") || strings.Contains(msg, "conflict") {
+		return nil
+	}
+	return err
 }
 
 func EnsureKeyspace(session *gocql.Session, keyspace string, replicationFactor int) error {
@@ -151,10 +169,13 @@ func ChangePassword(ctx context.Context, session *gocql.Session, keyspace, userI
 
 func ListLibraries(ctx context.Context, session *gocql.Session, keyspace string) ([]Library, error) {
 	var libs []Library
-	iter := session.Query(fmt.Sprintf(`SELECT id,name,path,created_at FROM %s.libraries`, keyspace)).
+	iter := session.Query(fmt.Sprintf(`SELECT id,name,path,kind,created_at FROM %s.libraries`, keyspace)).
 		WithContext(ctx).Iter()
 	var l Library
-	for iter.Scan(&l.ID, &l.Name, &l.Path, &l.CreatedAt) {
+	for iter.Scan(&l.ID, &l.Name, &l.Path, &l.Kind, &l.CreatedAt) {
+		if l.Kind == "" {
+			l.Kind = "movie"
+		}
 		libs = append(libs, l)
 	}
 	if err := iter.Close(); err != nil {
@@ -163,10 +184,13 @@ func ListLibraries(ctx context.Context, session *gocql.Session, keyspace string)
 	return libs, nil
 }
 
-func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, path string) (Library, error) {
+func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, path, kind string) (Library, error) {
+	if strings.TrimSpace(kind) == "" {
+		kind = "movie"
+	}
 	var existing Library
-	err := session.Query(fmt.Sprintf(`SELECT id,name,path,created_at FROM %s.libraries WHERE path=? LIMIT 1`, keyspace), path).
-		WithContext(ctx).Scan(&existing.ID, &existing.Name, &existing.Path, &existing.CreatedAt)
+	err := session.Query(fmt.Sprintf(`SELECT id,name,path,kind,created_at FROM %s.libraries WHERE path=? LIMIT 1`, keyspace), path).
+		WithContext(ctx).Scan(&existing.ID, &existing.Name, &existing.Path, &existing.Kind, &existing.CreatedAt)
 	if err == nil && existing.ID != "" {
 		if name != "" && existing.Name != name {
 			if err := session.Query(fmt.Sprintf(`UPDATE %s.libraries SET name=? WHERE id=?`, keyspace), name, existing.ID).
@@ -175,6 +199,16 @@ func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, 
 			}
 			existing.Name = name
 		}
+		if kind != "" && existing.Kind != kind {
+			if err := session.Query(fmt.Sprintf(`UPDATE %s.libraries SET kind=? WHERE id=?`, keyspace), kind, existing.ID).
+				WithContext(ctx).Exec(); err != nil {
+				return Library{}, err
+			}
+			existing.Kind = kind
+		}
+		if existing.Kind == "" {
+			existing.Kind = "movie"
+		}
 		return existing, nil
 	}
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
@@ -182,11 +216,11 @@ func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, 
 	}
 	id := gocql.TimeUUID()
 	now := time.Now()
-	if err := session.Query(fmt.Sprintf(`INSERT INTO %s.libraries (id,name,path,created_at) VALUES (?,?,?,?)`, keyspace),
-		id, name, path, now).WithContext(ctx).Exec(); err != nil {
+	if err := session.Query(fmt.Sprintf(`INSERT INTO %s.libraries (id,name,path,kind,created_at) VALUES (?,?,?,?,?)`, keyspace),
+		id, name, path, kind, now).WithContext(ctx).Exec(); err != nil {
 		return Library{}, err
 	}
-	return Library{ID: id.String(), Name: name, Path: path, CreatedAt: now}, nil
+	return Library{ID: id.String(), Name: name, Path: path, Kind: kind, CreatedAt: now}, nil
 }
 
 func DeleteLibrary(ctx context.Context, session *gocql.Session, keyspace, id string) error {

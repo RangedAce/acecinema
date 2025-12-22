@@ -69,18 +69,22 @@ func main() {
 
 	log.Printf("scanner starting (media_root=%s, interval=%s)", mediaRoot, interval)
 	for {
-		roots, err := loadLibraryRoots(context.Background(), session, keyspace, mediaRoot)
+		libs, err := loadLibraries(context.Background(), session, keyspace, mediaRoot)
 		if err != nil {
 			log.Printf("load libraries: %v", err)
 			time.Sleep(interval)
 			continue
 		}
-		if len(roots) == 0 {
+		if len(libs) == 0 {
 			log.Printf("no library roots configured")
 			time.Sleep(interval)
 			continue
 		}
-		added, err := svc.ScanRoots(context.Background(), roots, false)
+		roots := make([]media.LibraryRoot, 0, len(libs))
+		for _, lib := range libs {
+			roots = append(roots, media.LibraryRoot{Path: lib.Path, Kind: lib.Kind})
+		}
+		added, err := svc.ScanLibraries(context.Background(), roots, false)
 		if err != nil {
 			log.Printf("scan error: %v", err)
 		} else {
@@ -131,19 +135,22 @@ func envDuration(key string, def time.Duration) time.Duration {
 	return def
 }
 
-func loadLibraryRoots(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]string, error) {
+func loadLibraries(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]db.Library, error) {
 	libs, err := db.ListLibraries(ctx, session, keyspace)
 	if err != nil {
 		return nil, err
 	}
-	roots := make([]string, 0, len(libs))
+	filtered := make([]db.Library, 0, len(libs))
 	for _, lib := range libs {
 		if strings.TrimSpace(lib.Path) != "" {
-			roots = append(roots, lib.Path)
+			if lib.Kind == "" {
+				lib.Kind = "movie"
+			}
+			filtered = append(filtered, lib)
 		}
 	}
-	if len(roots) == 0 && fallback != "" {
-		roots = append(roots, fallback)
+	if len(filtered) == 0 && fallback != "" {
+		filtered = append(filtered, db.Library{Path: fallback, Kind: "movie"})
 	}
-	return roots, nil
+	return filtered, nil
 }

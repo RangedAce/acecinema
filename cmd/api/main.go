@@ -432,12 +432,21 @@ func handleCreateLibrary(session *gocql.Session, keyspace string) http.HandlerFu
 		var req struct {
 			Name string `json:"name"`
 			Path string `json:"path"`
+			Kind string `json:"kind"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			errorJSON(w, http.StatusBadRequest, "invalid body")
 			return
 		}
 		req.Path = strings.TrimSpace(req.Path)
+		req.Kind = strings.ToLower(strings.TrimSpace(req.Kind))
+		if req.Kind == "" {
+			req.Kind = "movie"
+		}
+		if req.Kind != "movie" && req.Kind != "series" {
+			errorJSON(w, http.StatusBadRequest, "kind must be movie or series")
+			return
+		}
 		if req.Path == "" {
 			errorJSON(w, http.StatusBadRequest, "path required")
 			return
@@ -445,7 +454,7 @@ func handleCreateLibrary(session *gocql.Session, keyspace string) http.HandlerFu
 		if req.Name == "" {
 			req.Name = filepath.Base(req.Path)
 		}
-		lib, err := db.CreateLibrary(r.Context(), session, keyspace, req.Name, req.Path)
+		lib, err := db.CreateLibrary(r.Context(), session, keyspace, req.Name, req.Path, req.Kind)
 		if err != nil {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
 			return
@@ -732,18 +741,42 @@ func tokenFromRequest(r *http.Request) string {
 }
 
 func scanWithLibraries(ctx context.Context, svc *media.Service, session *gocql.Session, keyspace, fallback string, refreshExisting bool) (int, error) {
-	roots, err := loadLibraryRoots(ctx, session, keyspace, fallback)
+	libs, err := loadLibraries(ctx, session, keyspace, fallback)
 	if err != nil {
 		return 0, err
 	}
-	if len(roots) == 0 {
+	if len(libs) == 0 {
 		return 0, nil
 	}
-	return svc.ScanRoots(ctx, roots, refreshExisting)
+	roots := make([]media.LibraryRoot, 0, len(libs))
+	for _, lib := range libs {
+		roots = append(roots, media.LibraryRoot{Path: lib.Path, Kind: lib.Kind})
+	}
+	return svc.ScanLibraries(ctx, roots, refreshExisting)
+}
+
+func loadLibraries(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]db.Library, error) {
+	libs, err := db.ListLibraries(ctx, session, keyspace)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]db.Library, 0, len(libs))
+	for _, lib := range libs {
+		if strings.TrimSpace(lib.Path) != "" {
+			if lib.Kind == "" {
+				lib.Kind = "movie"
+			}
+			filtered = append(filtered, lib)
+		}
+	}
+	if len(filtered) == 0 && fallback != "" {
+		filtered = append(filtered, db.Library{Path: fallback, Kind: "movie"})
+	}
+	return filtered, nil
 }
 
 func loadLibraryRoots(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]string, error) {
-	libs, err := db.ListLibraries(ctx, session, keyspace)
+	libs, err := loadLibraries(ctx, session, keyspace, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -752,9 +785,6 @@ func loadLibraryRoots(ctx context.Context, session *gocql.Session, keyspace, fal
 		if strings.TrimSpace(lib.Path) != "" {
 			roots = append(roots, lib.Path)
 		}
-	}
-	if len(roots) == 0 && fallback != "" {
-		roots = append(roots, fallback)
 	}
 	return roots, nil
 }
@@ -1130,6 +1160,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       background: linear-gradient(135deg, #0A0E27 0%, #161B33 100%);
       font-family: "Inter", "Noto Sans", system-ui, sans-serif;
       font-size: 15px;
+      overflow-x: hidden;
     }
     h1, h2, .logo, .brand {
       font-family: "Poppins", "Inter", sans-serif;
@@ -1144,6 +1175,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .app {
       display: flex;
       min-height: 100vh;
+      width: 100%;
     }
     .sidebar {
       width: 240px;
@@ -1201,6 +1233,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .main {
       flex: 1;
       padding: 24px 28px 32px;
+      min-width: 0;
     }
     .topbar {
       display: flex;
@@ -1319,6 +1352,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       color: var(--text);
       min-width: 220px;
     }
+    select {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--bg-secondary);
+      color: var(--text);
+      min-width: 160px;
+    }
     button {
       background: var(--accent);
       color: var(--text);
@@ -1362,8 +1403,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       position: absolute;
       inset: 0;
       background-image: var(--hero-image, none);
-      background-size: cover;
-      background-position: center;
+      background-size: 100% auto;
+      background-position: center top;
+      background-repeat: no-repeat;
       filter: saturate(1.1);
       opacity: 0.65;
     }
@@ -1386,6 +1428,13 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .hero.fade .hero-content {
       opacity: 0;
       transform: translateY(6px);
+    }
+    .hero.slide::before {
+      animation: hero-pan 7s ease both;
+    }
+    @keyframes hero-pan {
+      0% { transform: scale(1.02) translateX(0); }
+      100% { transform: scale(1.04) translateX(-2%); }
     }
     .hero-title {
       font-size: 30px;
@@ -1937,6 +1986,10 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
           <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
             <div class="row">
               <input id="libName" placeholder="Nom (optionnel)"/>
+              <select id="libKind">
+                <option value="movie">Films</option>
+                <option value="series">Series</option>
+              </select>
               <input id="libPath" placeholder="/mnt/media"/>
               <button id="addLibBtn">Ajouter source</button>
             </div>
@@ -2078,6 +2131,7 @@ let searchQuery = '';
 let heroItems = [];
 let heroIndex = 0;
 let heroTimer = null;
+let activeCategory = 'all';
 function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
@@ -2393,6 +2447,7 @@ function updateHero(item) {
     heroDesc.textContent = 'Selection auto de la bibliotheque locale pour une lecture immediate.';
     heroMeta.textContent = 'A la une';
     heroPlay.disabled = true;
+    hero.classList.remove('slide');
     return;
   }
   const titleText = getDisplayTitle(item);
@@ -2410,6 +2465,9 @@ function updateHero(item) {
   heroMeta.textContent = metaParts.length ? metaParts.join(' | ') : 'A la une';
   heroPlay.disabled = false;
   heroPlay.onclick = () => play(item.id, titleText);
+  hero.classList.remove('slide');
+  void hero.offsetWidth;
+  hero.classList.add('slide');
 }
 function startHeroCarousel(list) {
   if (heroTimer) {
@@ -2472,7 +2530,13 @@ function applySearch() {
     ].join(' ').toLowerCase();
     return hay.includes(q);
   });
-  renderHome(filtered);
+  const typed = filtered.filter(m => {
+    const mType = (m.type || (m.metadata || {}).type || '').toLowerCase();
+    if (activeCategory === 'movie') return mType === 'movie';
+    if (activeCategory === 'series') return mType === 'series';
+    return true;
+  });
+  renderHome(typed);
 }
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -2648,7 +2712,8 @@ async function loadLibraries(){
     title.textContent = l.name || l.path;
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = l.path;
+    const kindLabel = (l.kind === 'series') ? 'Series' : 'Films';
+    meta.textContent = kindLabel + ' | ' + l.path;
     const btn = document.createElement('button');
     btn.className = 'secondary';
     btn.textContent = 'Supprimer';
@@ -2662,12 +2727,13 @@ async function loadLibraries(){
 async function addLibrary(){
   if (!access) { setStatus('Not logged in', true); return; }
   const name = document.getElementById('libName').value.trim();
+  const kind = (document.getElementById('libKind').value || 'movie').trim();
   const path = document.getElementById('libPath').value.trim();
   if (!path) { setStatus('Chemin requis', true); return; }
   const res = await fetch('/admin/libraries',{
     method:'POST',
     headers:{'Content-Type':'application/json', Authorization:'Bearer '+access},
-    body:JSON.stringify({name:name, path:path})
+    body:JSON.stringify({name:name, path:path, kind: kind})
   });
   if (!res.ok) {
     setStatus('Add source failed: ' + res.status, true);
@@ -3064,10 +3130,29 @@ if (sidebarToggle) {
     document.body.classList.toggle('sidebar-open');
   });
 }
-if (navHome) navHome.addEventListener('click', () => { showHome(); loadMedia(); });
-if (navMovies) navMovies.addEventListener('click', () => { showHome(); setActiveNav('movies'); loadMedia(); });
-if (navSeries) navSeries.addEventListener('click', () => { showHome(); setActiveNav('series'); loadMedia(); });
-if (navList) navList.addEventListener('click', () => { showHome(); setActiveNav('list'); loadMedia(); });
+if (navHome) navHome.addEventListener('click', () => {
+  activeCategory = 'all';
+  showHome();
+  loadMedia();
+});
+if (navMovies) navMovies.addEventListener('click', () => {
+  activeCategory = 'movie';
+  showHome();
+  setActiveNav('movies');
+  loadMedia();
+});
+if (navSeries) navSeries.addEventListener('click', () => {
+  activeCategory = 'series';
+  showHome();
+  setActiveNav('series');
+  loadMedia();
+});
+if (navList) navList.addEventListener('click', () => {
+  activeCategory = 'all';
+  showHome();
+  setActiveNav('list');
+  loadMedia();
+});
 if (navSettings) navSettings.addEventListener('click', () => { showSettings(); loadLibraries(); });
 if (heroAdd) {
   heroAdd.addEventListener('click', () => {

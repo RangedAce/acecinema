@@ -48,6 +48,11 @@ type Service struct {
 	tmdbKey   string
 }
 
+type LibraryRoot struct {
+	Path string
+	Kind string
+}
+
 func NewService(session *gocql.Session, keyspace, mediaRoot, tmdbKey string) *Service {
 	return &Service{session: session, keyspace: keyspace, mediaRoot: mediaRoot, tmdbKey: tmdbKey}
 }
@@ -121,12 +126,25 @@ func (s *Service) Scan(ctx context.Context) (int, error) {
 
 // ScanRoots walks the provided roots and inserts items/assets.
 func (s *Service) ScanRoots(ctx context.Context, roots []string, refreshExisting bool) (int, error) {
+	libs := make([]LibraryRoot, 0, len(roots))
+	for _, root := range roots {
+		libs = append(libs, LibraryRoot{Path: root, Kind: "movie"})
+	}
+	return s.ScanLibraries(ctx, libs, refreshExisting)
+}
+
+// ScanLibraries walks the provided library roots and inserts items/assets.
+func (s *Service) ScanLibraries(ctx context.Context, libs []LibraryRoot, refreshExisting bool) (int, error) {
 	added := 0
-	if len(roots) == 0 {
+	if len(libs) == 0 {
 		return 0, fmt.Errorf("no media roots configured")
 	}
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
+	for _, lib := range libs {
+		root := strings.TrimSpace(lib.Path)
+		kind := strings.ToLower(strings.TrimSpace(lib.Kind))
+		if kind != "movie" && kind != "series" {
+			kind = "movie"
+		}
 		if root == "" {
 			continue
 		}
@@ -151,7 +169,7 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string, refreshExisting
 			}
 			title, year := parseTitle(info.Name())
 			if existingID, ok := s.lookupMediaID(ctx, relPath, absPath); ok {
-				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year, refreshExisting)
+				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year, kind, refreshExisting)
 				if err != nil {
 					return err
 				}
@@ -180,7 +198,7 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string, refreshExisting
 				return err
 			}
 			if !applied {
-				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year, refreshExisting)
+				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year, kind, refreshExisting)
 				if err != nil {
 					return err
 				}
@@ -195,7 +213,7 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string, refreshExisting
 				return nil
 			}
 			if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_items (id,type,title,year,created_at) VALUES (?,?,?,?,?)`, s.keyspace),
-				mediaID, "movie", title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
+				mediaID, kind, title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
 				return err
 			}
 			if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_assets (id,media_id,path,size,format) VALUES (?,?,?,?,?)`, s.keyspace),
@@ -220,25 +238,32 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string, refreshExisting
 	return added, nil
 }
 
-func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, path string, info os.FileInfo, title string, year int, refreshExisting bool) (bool, error) {
+func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, path string, info os.FileInfo, title string, year int, kind string, refreshExisting bool) (bool, error) {
 	inserted := false
 	var existing string
 	var currentTitle string
 	var currentYear int
 	var currentPoster string
 	var currentMeta map[string]string
-	err := s.session.Query(fmt.Sprintf(`SELECT id,title,year,poster_url,metadata FROM %s.media_items WHERE id=?`, s.keyspace), mediaID).
-		WithContext(ctx).Scan(&existing, &currentTitle, &currentYear, &currentPoster, &currentMeta)
+	var currentType string
+	err := s.session.Query(fmt.Sprintf(`SELECT id,type,title,year,poster_url,metadata FROM %s.media_items WHERE id=?`, s.keyspace), mediaID).
+		WithContext(ctx).Scan(&existing, &currentType, &currentTitle, &currentYear, &currentPoster, &currentMeta)
 	if err != nil {
 		if !errors.Is(err, gocql.ErrNotFound) {
 			return false, err
 		}
 		if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_items (id,type,title,year,created_at) VALUES (?,?,?,?,?)`, s.keyspace),
-			mediaID, "movie", title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
+			mediaID, kind, title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
 			return false, err
 		}
 		inserted = true
 	} else {
+		if kind != "" && currentType != kind {
+			if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET type=? WHERE id=?`, s.keyspace),
+				kind, mediaID).WithContext(ctx).Exec(); err != nil {
+				return false, err
+			}
+		}
 		if refreshExisting && title != "" && (currentTitle != title || (year > 0 && currentYear != year)) {
 			if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET title=?, year=? WHERE id=?`, s.keyspace),
 				title, year, mediaID).WithContext(ctx).Exec(); err != nil {
