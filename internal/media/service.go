@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,12 @@ type Asset struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	Format string `json:"format"`
+}
+
+type ProgressItem struct {
+	Item       Item      `json:"item"`
+	PositionMs int64     `json:"position_ms"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Service struct {
@@ -104,6 +111,36 @@ func (s *Service) Assets(ctx context.Context, mediaID string) ([]Asset, error) {
 func (s *Service) UpdateProgress(ctx context.Context, userID, mediaID string, pos int64) error {
 	return s.session.Query(fmt.Sprintf(`UPDATE %s.play_state SET position_ms=?, updated_at=? WHERE user_id=? AND media_id=?`, s.keyspace),
 		pos, time.Now(), userID, mediaID).WithContext(ctx).Exec()
+}
+
+func (s *Service) ListContinue(ctx context.Context, userID string, limit int) ([]ProgressItem, error) {
+	iter := s.session.Query(fmt.Sprintf(`SELECT media_id, position_ms, updated_at FROM %s.play_state WHERE user_id=?`, s.keyspace), userID).
+		WithContext(ctx).Iter()
+	var mediaID gocql.UUID
+	var pos int64
+	var updated time.Time
+	items := []ProgressItem{}
+	for iter.Scan(&mediaID, &pos, &updated) {
+		it, err := s.Get(ctx, mediaID.String())
+		if err != nil {
+			continue
+		}
+		items = append(items, ProgressItem{
+			Item:       it,
+			PositionMs: pos,
+			UpdatedAt:  updated,
+		})
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
 }
 
 func (s *Service) Reset(ctx context.Context) error {

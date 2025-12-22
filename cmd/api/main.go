@@ -161,6 +161,7 @@ func main() {
 	})
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
+	r.With(authSvc.RequireAuth).Get("/progress/continue", handleListProgress(mediaSvc))
 
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(authSvc.RequireRole("admin"))
@@ -423,6 +424,22 @@ func handleUpdateProgress(svc *media.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	}
+}
+
+func handleListProgress(svc *media.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := auth.ClaimsFromContext(r.Context())
+		if claims == nil || claims.UserID == "" {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		items, err := svc.ListContinue(r.Context(), claims.UserID, 24)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, items)
 	}
 }
 
@@ -1832,6 +1849,18 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+    .rating-badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(10, 14, 39, 0.85);
+      color: var(--text-main);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      padding: 4px 6px;
+      border-radius: 6px;
+      font-size: 10px;
+      letter-spacing: 0.4px;
+    }
     .progress {
       height: 4px;
       width: 100%;
@@ -2284,6 +2313,12 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
             </div>
             <div id="recentRow" class="media-row"></div>
           </div>
+          <div id="continueSection" class="section hidden">
+            <div class="section-header">
+              <div class="section-title">Continuer a regarder</div>
+            </div>
+            <div id="continueRow" class="media-row"></div>
+          </div>
           <div class="section">
             <div class="section-header">
               <div class="section-title">Bibliotheque</div>
@@ -2408,6 +2443,8 @@ const homeView = document.getElementById('homeView');
 const settingsView = document.getElementById('settingsView');
 const mediaGrid = document.getElementById('media');
 const recentRow = document.getElementById('recentRow');
+const continueSection = document.getElementById('continueSection');
+const continueRow = document.getElementById('continueRow');
 const hero = document.getElementById('hero');
 const heroTitle = document.getElementById('heroTitle');
 const heroDesc = document.getElementById('heroDesc');
@@ -2447,7 +2484,9 @@ const navSeries = document.getElementById('navSeries');
 const navList = document.getElementById('navList');
 const navSettings = document.getElementById('navSettings');
 let mediaCache = [];
+let continueItems = [];
 let searchQuery = '';
+let searchDebounce = null;
 let heroItems = [];
 let heroIndex = 0;
 let heroTimer = null;
@@ -2648,7 +2687,11 @@ function buildSimilarRow(current) {
     detailsSimilar.appendChild(empty);
     return;
   }
-  list.slice(0, 12).forEach(m => detailsSimilar.appendChild(createMediaCard(m)));
+  list.slice(0, 12).forEach(m => {
+    const card = createMediaCard(m);
+    addRatingBadge(card, m);
+    detailsSimilar.appendChild(card);
+  });
 }
 async function openDetails(item) {
   if (!item) return;
@@ -2722,6 +2765,27 @@ async function openDetails(item) {
 function closeDetails() {
   detailsOverlay.classList.add('hidden');
 }
+function getItemDurationSec(m) {
+  const meta = m.metadata || {};
+  const runtimeMin = parseFloat(meta.runtime || 0);
+  if (isFinite(runtimeMin) && runtimeMin > 0) {
+    return runtimeMin * 60;
+  }
+  const runtimeSec = parseFloat(meta.duration || 0);
+  if (isFinite(runtimeSec) && runtimeSec > 0) {
+    return runtimeSec;
+  }
+  return 0;
+}
+function addRatingBadge(card, item) {
+  if (!card || !item) return;
+  const rating = formatRating(item.metadata || {});
+  if (!rating) return;
+  const el = document.createElement('div');
+  el.className = 'rating-badge';
+  el.textContent = rating;
+  card.appendChild(el);
+}
 function createMediaCard(m) {
   const el = document.createElement('div');
   el.className = 'card';
@@ -2747,6 +2811,18 @@ function createMediaCard(m) {
   const year = document.createElement('div');
   year.className = 'card-year';
   year.textContent = String(getDisplayYear(m) || '');
+  if (m.progress_ms && m.progress_ms > 0) {
+    const durationSec = getItemDurationSec(m);
+    if (durationSec > 0) {
+      const progressWrap = document.createElement('div');
+      progressWrap.className = 'progress';
+      const progressFill = document.createElement('span');
+      const pct = Math.min(Math.max(m.progress_ms / 1000 / durationSec, 0), 1);
+      progressFill.style.width = (pct * 100).toFixed(1) + '%';
+      progressWrap.appendChild(progressFill);
+      el.appendChild(progressWrap);
+    }
+  }
   const btn = document.createElement('button');
   btn.className = 'play-btn';
   btn.innerHTML = '&#9654;';
@@ -2840,30 +2916,45 @@ function renderHome(list) {
   sorted.slice(0, 12).forEach(m => recentRow.appendChild(createMediaCard(m)));
   sorted.forEach(m => mediaGrid.appendChild(createMediaCard(m)));
 }
+function matchesQuery(item, q) {
+  if (!q) return true;
+  const meta = item.metadata || {};
+  const hay = [
+    item.title,
+    meta.title,
+    meta.original_title,
+    meta.name,
+    meta.original_name,
+    meta.plot,
+    meta.overview,
+    String(item.year || meta.year || '')
+  ].join(' ').toLowerCase();
+  return hay.includes(q);
+}
+function matchesType(item) {
+  const mType = (item.type || (item.metadata || {}).type || '').toLowerCase();
+  if (activeCategory === 'movie') return mType === 'movie';
+  if (activeCategory === 'series') return mType === 'series';
+  return true;
+}
+function renderContinue(list) {
+  continueRow.innerHTML = '';
+  if (!Array.isArray(list) || list.length === 0) {
+    continueSection.classList.add('hidden');
+    return;
+  }
+  continueSection.classList.remove('hidden');
+  list.forEach(m => continueRow.appendChild(createMediaCard(m)));
+}
 function applySearch() {
   const q = searchQuery.trim().toLowerCase();
-  const filtered = mediaCache.filter(m => {
-    const meta = m.metadata || {};
-    const hay = [
-      m.title,
-      meta.title,
-      meta.original_title,
-      meta.name,
-      meta.original_name,
-      meta.plot,
-      meta.overview,
-      String(m.year || meta.year || '')
-    ].join(' ').toLowerCase();
-    if (!q) return true;
-    return hay.includes(q);
-  });
-  const typed = filtered.filter(m => {
-    const mType = (m.type || (m.metadata || {}).type || '').toLowerCase();
-    if (activeCategory === 'movie') return mType === 'movie';
-    if (activeCategory === 'series') return mType === 'series';
-    return true;
-  });
-  renderHome(typed);
+  const filtered = mediaCache.filter(m => matchesQuery(m, q)).filter(matchesType);
+  renderHome(filtered);
+  const cont = continueItems
+    .map(entry => Object.assign({}, entry.item || {}, { progress_ms: entry.position_ms || 0 }))
+    .filter(m => matchesQuery(m, q))
+    .filter(matchesType);
+  renderContinue(cont);
 }
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -2951,7 +3042,29 @@ async function loadMedia() {
   }
   mediaCache = list;
   setStatus('Medias charges: ' + list.length, false);
+  await loadContinue();
   applySearch();
+}
+async function loadContinue() {
+  if (!access) { return; }
+  try {
+    const res = await fetch('/progress/continue', { headers: { Authorization: 'Bearer ' + access } });
+    if (!res.ok) {
+      continueItems = [];
+      continueSection.classList.add('hidden');
+      return;
+    }
+    const items = await res.json();
+    if (!Array.isArray(items)) {
+      continueItems = [];
+      continueSection.classList.add('hidden');
+      return;
+    }
+    continueItems = items;
+  } catch (err) {
+    console.error('continue load failed', err);
+    continueItems = [];
+  }
 }
 async function play(id, titleText){
   if (!access) { setStatus('Not logged in', true); return; }
@@ -2959,6 +3072,8 @@ async function play(id, titleText){
   catalogDuration = 0;
   hlsBaseOffset = 0;
   pendingSeekTime = null;
+  lastProgressSentAt = 0;
+  lastProgressSentMs = 0;
   openPlayer(titleText || 'Lecture');
   await loadAudioTracks(id);
   await startPlayback(id, 0);
@@ -3019,7 +3134,9 @@ function logout(){
   localStorage.removeItem('refresh_token');
   setAuthed(false);
   mediaCache = [];
+  continueItems = [];
   renderHome([]);
+  continueSection.classList.add('hidden');
   adminPanel.classList.add('hidden');
   scanBtn.classList.add('hidden');
   avatarMenu.classList.add('hidden');
@@ -3173,6 +3290,8 @@ let queuedRestartTarget = null;
 const RESTART_COOLDOWN_MS = 1200;
 let seekHoldActive = false;
 let seekHoldTarget = 0;
+let lastProgressSentAt = 0;
+let lastProgressSentMs = 0;
 function debugSeekLog() {
   if (!DEBUG_SEEK) return;
   console.log.apply(console, arguments);
@@ -3243,6 +3362,7 @@ function openPlayer(titleText){
   showControls();
 }
 function closePlayer(){
+  maybeSendProgress(true);
   if (hls) {
     hls.destroy();
     hls = null;
@@ -3498,6 +3618,31 @@ function updateRangeFill(range){
   const pctClamped = Math.min(Math.max(pct, 0), 1);
   range.style.setProperty('--fill-percent', (pctClamped * 100).toFixed(2) + '%');
 }
+async function sendProgress(posMs){
+  if (!currentMediaId || !access) return;
+  try {
+    await fetch('/progress', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + access },
+      body: JSON.stringify({ media_id: currentMediaId, position_ms: posMs })
+    });
+  } catch (err) {
+    console.error('progress update failed', err);
+  }
+}
+function maybeSendProgress(force){
+  if (!currentMediaId || !access) return;
+  const posMs = Math.floor(getGlobalTime() * 1000);
+  if (!isFinite(posMs) || posMs < 1000) return;
+  const now = Date.now();
+  if (!force) {
+    if (now - lastProgressSentAt < 10000) return;
+    if (Math.abs(posMs - lastProgressSentMs) < 5000) return;
+  }
+  lastProgressSentAt = now;
+  lastProgressSentMs = posMs;
+  sendProgress(posMs);
+}
 function getDuration(){
   if (currentStreamMode === 'hls' && catalogDuration > 0) {
     return catalogDuration;
@@ -3663,6 +3808,7 @@ function seekFromPointer(evt, preview){
     seekBar.value = pos.toFixed(2);
     updateRangeFill(seekBar);
     timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
+    maybeSendProgress(false);
   });
   if (DEBUG_SEEK) {
     playerVideo.addEventListener('seeking', () => debugSeekLog('[vid] seeking', playerVideo.currentTime));
@@ -3745,7 +3891,13 @@ playToggle.addEventListener('click', () => {
   }
 });
 playerVideo.addEventListener('play', () => { playToggle.innerHTML = ICON_PAUSE; });
-playerVideo.addEventListener('pause', () => { playToggle.innerHTML = ICON_PLAY; });
+playerVideo.addEventListener('pause', () => {
+  playToggle.innerHTML = ICON_PLAY;
+  maybeSendProgress(true);
+});
+playerVideo.addEventListener('ended', () => {
+  maybeSendProgress(true);
+});
 fullscreenBtn.addEventListener('click', () => {
   if (document.fullscreenElement) {
     document.exitFullscreen();
@@ -3783,7 +3935,12 @@ document.addEventListener('keydown', (e) => {
 if (searchInput) {
   searchInput.addEventListener('input', (e) => {
     searchQuery = e.target.value || '';
-    applySearch();
+    if (searchDebounce) {
+      clearTimeout(searchDebounce);
+    }
+    searchDebounce = setTimeout(() => {
+      applySearch();
+    }, 300);
   });
 }
 if (sidebarToggle) {
