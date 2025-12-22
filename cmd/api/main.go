@@ -2046,20 +2046,24 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       align-items: center;
       justify-content: center;
       z-index: 999;
-      padding: 20px;
+      padding: 0;
       backdrop-filter: blur(6px);
     }
     .player-shell {
-      width: min(1080px, 100%);
+      width: 100vw;
+      height: 100vh;
       background: #000;
-      border-radius: 16px;
+      border-radius: 0;
       overflow: hidden;
       border: 1px solid rgba(255, 255, 255, 0.1);
       position: relative;
       display: flex;
       flex-direction: column;
-      max-height: 90vh;
+      max-height: 100vh;
       backdrop-filter: blur(20px);
+    }
+    .no-scroll {
+      overflow: hidden;
     }
     .player-shell:not(.controls-visible) {
       cursor: none;
@@ -3405,6 +3409,7 @@ function openPlayer(titleText){
   updateRangeFill(seekBar);
   timeLabel.textContent = '0:00 / 0:00';
   overlay.style.display = 'flex';
+  document.body.classList.add('no-scroll');
   showControls();
 }
 function closePlayer(){
@@ -3436,6 +3441,7 @@ function closePlayer(){
     controlsTimer = null;
   }
   overlay.style.display = 'none';
+  document.body.classList.remove('no-scroll');
 }
 function showControls(){
   playerShell.classList.add('controls-visible');
