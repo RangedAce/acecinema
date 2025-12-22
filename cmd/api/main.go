@@ -1890,6 +1890,28 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       font-size: 10px;
       letter-spacing: 0.4px;
     }
+    .card-remove {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(10, 14, 39, 0.7);
+      color: var(--text-main);
+      font-size: 14px;
+      line-height: 1;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      z-index: 2;
+      transition: all 0.2s ease;
+    }
+    .card-remove:hover {
+      border-color: rgba(236, 72, 153, 0.6);
+      color: #EC4899;
+    }
     .progress {
       height: 4px;
       width: 100%;
@@ -2827,10 +2849,11 @@ function addRatingBadge(card, item) {
   el.textContent = rating;
   card.appendChild(el);
 }
-function createMediaCard(m) {
+function createMediaCard(m, options) {
   const el = document.createElement('div');
   el.className = 'card';
   const titleText = getDisplayTitle(m);
+  const opts = options || {};
   if (m.poster_url) {
     const img = document.createElement('img');
     img.className = 'poster';
@@ -2875,6 +2898,17 @@ function createMediaCard(m) {
   el.appendChild(title);
   el.appendChild(year);
   el.appendChild(btn);
+  if (opts.showRemove && resumeMs > 0) {
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'card-remove';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Retirer de Continuer';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeProgress(m.id);
+    });
+    el.appendChild(removeBtn);
+  }
   el.addEventListener('click', () => openDetails(m));
   return el;
 }
@@ -2986,7 +3020,7 @@ function renderContinue(list) {
     return;
   }
   continueSection.classList.remove('hidden');
-  list.forEach(m => continueRow.appendChild(createMediaCard(m)));
+  list.forEach(m => continueRow.appendChild(createMediaCard(m, { showRemove: true })));
 }
 function applySearch() {
   const q = searchQuery.trim().toLowerCase();
@@ -3113,6 +3147,23 @@ async function loadContinue() {
   } catch (err) {
     console.error('continue load failed', err);
     continueItems = [];
+  }
+}
+async function removeProgress(mediaId) {
+  if (!access || !mediaId) return;
+  try {
+    await fetch('/progress', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + access },
+      body: JSON.stringify({ media_id: mediaId, position_ms: 0 })
+    });
+    continueItems = continueItems.filter(entry => entry.item && entry.item.id !== mediaId);
+    renderContinue(continueItems.map(entry => Object.assign({}, entry.item || {}, {
+      progress_ms: entry.position_ms || 0,
+      duration_sec: entry.duration_sec || 0
+    })));
+  } catch (err) {
+    console.error('remove progress failed', err);
   }
 }
 async function play(id, titleText, resumeMs){
