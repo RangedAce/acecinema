@@ -168,6 +168,13 @@ func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, 
 	err := session.Query(fmt.Sprintf(`SELECT id,name,path,created_at FROM %s.libraries WHERE path=? LIMIT 1`, keyspace), path).
 		WithContext(ctx).Scan(&existing.ID, &existing.Name, &existing.Path, &existing.CreatedAt)
 	if err == nil && existing.ID != "" {
+		if name != "" && existing.Name != name {
+			if err := session.Query(fmt.Sprintf(`UPDATE %s.libraries SET name=? WHERE id=?`, keyspace), name, existing.ID).
+				WithContext(ctx).Exec(); err != nil {
+				return Library{}, err
+			}
+			existing.Name = name
+		}
 		return existing, nil
 	}
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {

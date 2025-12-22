@@ -128,25 +128,53 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 			if !isVideo(path) {
 				return nil
 			}
-			title, year := parseTitle(info.Name())
-			mediaID := gocql.TimeUUID()
-			var existingPath string
-			var existingID gocql.UUID
-			applied, err := s.session.Query(
-				fmt.Sprintf(`INSERT INTO %s.media_paths (path, media_id) VALUES (?, ?) IF NOT EXISTS`, s.keyspace),
-				path, mediaID,
-			).WithContext(ctx).ScanCAS(&existingPath, &existingID)
-			if err != nil {
-				return err
+			absPath := filepath.Clean(path)
+			relPath := ""
+			if rel, relErr := filepath.Rel(root, absPath); relErr == nil {
+				relPath = filepath.Clean(rel)
 			}
-			if !applied {
-				// already indexed; ensure media item and asset exist
-				inserted, err := s.ensureMediaForPath(ctx, existingID, path, info, title, year)
+			title, year := parseTitle(info.Name())
+			if existingID, ok := s.lookupMediaID(ctx, relPath, absPath); ok {
+				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year)
 				if err != nil {
 					return err
 				}
 				if inserted {
 					added++
+				}
+				if relPath != "" {
+					if err := s.ensurePathAlias(ctx, relPath, existingID); err != nil {
+						return err
+					}
+				}
+				if err := s.ensurePathAlias(ctx, absPath, existingID); err != nil {
+					return err
+				}
+				return nil
+			}
+
+			mediaID := gocql.TimeUUID()
+			var existingPath string
+			var existingID gocql.UUID
+			applied, err := s.session.Query(
+				fmt.Sprintf(`INSERT INTO %s.media_paths (path, media_id) VALUES (?, ?) IF NOT EXISTS`, s.keyspace),
+				absPath, mediaID,
+			).WithContext(ctx).ScanCAS(&existingPath, &existingID)
+			if err != nil {
+				return err
+			}
+			if !applied {
+				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year)
+				if err != nil {
+					return err
+				}
+				if inserted {
+					added++
+				}
+				if relPath != "" {
+					if err := s.ensurePathAlias(ctx, relPath, existingID); err != nil {
+						return err
+					}
 				}
 				return nil
 			}
@@ -155,8 +183,13 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 				return err
 			}
 			if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_assets (id,media_id,path,size,format) VALUES (?,?,?,?,?)`, s.keyspace),
-				gocql.TimeUUID(), mediaID, path, info.Size(), filepath.Ext(path)).WithContext(ctx).Exec(); err != nil {
+				gocql.TimeUUID(), mediaID, absPath, info.Size(), filepath.Ext(absPath)).WithContext(ctx).Exec(); err != nil {
 				return err
+			}
+			if relPath != "" {
+				if err := s.ensurePathAlias(ctx, relPath, mediaID); err != nil {
+					return err
+				}
 			}
 			added++
 			return nil
@@ -206,6 +239,43 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, pa
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *Service) lookupMediaID(ctx context.Context, relPath, absPath string) (gocql.UUID, bool) {
+	if relPath != "" {
+		var id gocql.UUID
+		if err := s.session.Query(fmt.Sprintf(`SELECT media_id FROM %s.media_paths WHERE path=?`, s.keyspace), relPath).
+			WithContext(ctx).Scan(&id); err == nil {
+			return id, true
+		}
+	}
+	if absPath != "" {
+		var id gocql.UUID
+		if err := s.session.Query(fmt.Sprintf(`SELECT media_id FROM %s.media_paths WHERE path=?`, s.keyspace), absPath).
+			WithContext(ctx).Scan(&id); err == nil {
+			return id, true
+		}
+	}
+	return gocql.UUID{}, false
+}
+
+func (s *Service) ensurePathAlias(ctx context.Context, path string, mediaID gocql.UUID) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	var existingPath string
+	var existingID gocql.UUID
+	applied, err := s.session.Query(
+		fmt.Sprintf(`INSERT INTO %s.media_paths (path, media_id) VALUES (?, ?) IF NOT EXISTS`, s.keyspace),
+		path, mediaID,
+	).WithContext(ctx).ScanCAS(&existingPath, &existingID)
+	if err != nil {
+		return err
+	}
+	if !applied && existingID != mediaID {
+		return fmt.Errorf("path alias already mapped to another media")
+	}
+	return nil
 }
 
 func isVideo(path string) bool {

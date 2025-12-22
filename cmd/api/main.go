@@ -592,6 +592,65 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       box-shadow: 0 10px 30px rgba(86, 82, 84, 0.08);
     }
     .hidden { display: none; }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      gap: 10px;
+    }
+    .logo {
+      font-size: 34px;
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+    .avatar-wrap { position: relative; }
+    .avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 1px solid var(--dust-grey);
+      background: var(--charcoal);
+      color: var(--white);
+      font-weight: bold;
+    }
+    .menu {
+      position: absolute;
+      right: 0;
+      top: 48px;
+      background: var(--white);
+      border: 1px solid var(--dust-grey);
+      border-radius: 10px;
+      min-width: 160px;
+      box-shadow: 0 10px 24px rgba(86, 82, 84, 0.18);
+      padding: 6px;
+      z-index: 50;
+    }
+    .menu button {
+      width: 100%;
+      text-align: left;
+      background: var(--white);
+      color: var(--charcoal);
+      border: none;
+      padding: 10px;
+    }
+    .menu button:hover {
+      background: var(--snow);
+    }
+    .view { margin-top: 12px; }
+    .avatar-grid {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .avatar-option {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 1px solid var(--dust-grey);
+      cursor: pointer;
+    }
     .row {
       display: flex;
       flex-wrap: wrap;
@@ -686,8 +745,19 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
   <div class="page">
-    <h1>AceCinema</h1>
-    <div class="subtitle">Bibliotheque locale + streaming (MVP)</div>
+    <div class="topbar">
+      <div>
+        <div class="logo">AceCinema</div>
+        <div class="subtitle">Bibliotheque locale + streaming (MVP)</div>
+      </div>
+      <div class="avatar-wrap hidden" id="avatarWrap">
+        <button id="avatarBtn" class="avatar">A</button>
+        <div id="avatarMenu" class="menu hidden">
+          <button id="homeNav">Accueil</button>
+          <button id="settingsNav">Parametres</button>
+        </div>
+      </div>
+    </div>
     <div id="authPanel" class="panel">
       <div class="row">
         <input id="email" placeholder="email" value="admin@example.com"/>
@@ -695,24 +765,38 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
         <button id="loginBtn">Login</button>
       </div>
     </div>
-    <div id="appPanel" class="panel hidden">
-      <div class="row actions">
-        <button id="refreshBtn" class="secondary">Refresh token</button>
-        <button id="logoutBtn" class="secondary">Logout</button>
-        <button id="scanBtn">Scanner maintenant</button>
+    <div id="appShell" class="hidden">
+      <div class="panel">
+        <div id="status" class="status"></div>
+        <div id="token" class="token"></div>
       </div>
-      <div id="status" class="status"></div>
-      <div id="token" class="token"></div>
-      <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
-        <div class="row">
-          <input id="libName" placeholder="Nom (optionnel)"/>
-          <input id="libPath" placeholder="/mnt/media"/>
-          <button id="addLibBtn">Ajouter source</button>
+      <div id="homeView" class="view">
+        <div id="media" class="grid"></div>
+      </div>
+      <div id="settingsView" class="view hidden">
+        <div class="panel">
+          <div class="row actions">
+            <button id="refreshBtn" class="secondary">Refresh token</button>
+            <button id="scanBtn">Scanner maintenant</button>
+            <button id="logoutBtn" class="secondary">Logout</button>
+          </div>
         </div>
-        <div id="libList" class="grid"></div>
+        <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
+          <div class="row">
+            <input id="libName" placeholder="Nom (optionnel)"/>
+            <input id="libPath" placeholder="/mnt/media"/>
+            <button id="addLibBtn">Ajouter source</button>
+          </div>
+          <div id="libList" class="grid"></div>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="row">
+            <div>Avatar</div>
+          </div>
+          <div class="avatar-grid" id="avatarGrid"></div>
+        </div>
       </div>
     </div>
-    <div id="media" class="grid hidden"></div>
   </div>
   <div id="playerOverlay" class="player-overlay">
     <div class="player-shell">
@@ -729,16 +813,30 @@ let refreshToken = localStorage.getItem('refresh_token') || '';
 const statusEl = document.getElementById('status');
 const tokenEl = document.getElementById('token');
 const authPanel = document.getElementById('authPanel');
-const appPanel = document.getElementById('appPanel');
+const appShell = document.getElementById('appShell');
+const homeView = document.getElementById('homeView');
+const settingsView = document.getElementById('settingsView');
 const mediaGrid = document.getElementById('media');
 const adminPanel = document.getElementById('adminPanel');
 const libList = document.getElementById('libList');
 const scanBtn = document.getElementById('scanBtn');
+const avatarWrap = document.getElementById('avatarWrap');
+const avatarBtn = document.getElementById('avatarBtn');
+const avatarMenu = document.getElementById('avatarMenu');
+const avatarGrid = document.getElementById('avatarGrid');
 function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
-  appPanel.classList.toggle('hidden', !isAuthed);
-  mediaGrid.classList.toggle('hidden', !isAuthed);
+  appShell.classList.toggle('hidden', !isAuthed);
+  avatarWrap.classList.toggle('hidden', !isAuthed);
   tokenEl.textContent = access ? ('Token: ' + access) : 'Token: (empty)';
+}
+function showHome() {
+  homeView.classList.remove('hidden');
+  settingsView.classList.add('hidden');
+}
+function showSettings() {
+  homeView.classList.add('hidden');
+  settingsView.classList.remove('hidden');
 }
 function setStatus(msg, isError) {
   statusEl.textContent = msg;
@@ -754,6 +852,7 @@ async function login() {
   setAuthed(res.ok);
   setStatus(res.ok ? 'Login OK' : 'Login failed', !res.ok);
   if (res.ok) {
+    showHome();
     await loadLibraries();
     loadMedia();
   }
@@ -864,6 +963,8 @@ function logout(){
   mediaGrid.innerHTML = '';
   adminPanel.classList.add('hidden');
   scanBtn.classList.add('hidden');
+  avatarMenu.classList.add('hidden');
+  showHome();
   setStatus('Deconnecte', false);
 }
 async function loadLibraries(){
@@ -933,6 +1034,41 @@ async function deleteLibrary(id){
   }
   await loadLibraries();
 }
+const avatarColors = ['#565254', '#7a7d7d', '#d0cfcf', '#fffbfe', '#3a3738', '#8a8587'];
+function applyAvatar(color){
+  const chosen = color || localStorage.getItem('avatar_color') || avatarColors[0];
+  localStorage.setItem('avatar_color', chosen);
+  avatarBtn.style.background = chosen;
+  avatarBtn.style.color = chosen === '#fffbfe' ? '#565254' : '#ffffff';
+}
+function buildAvatarPicker(){
+  avatarGrid.innerHTML = '';
+  avatarColors.forEach(color => {
+    const el = document.createElement('div');
+    el.className = 'avatar-option';
+    el.style.background = color;
+    el.addEventListener('click', () => applyAvatar(color));
+    avatarGrid.appendChild(el);
+  });
+}
+avatarBtn.addEventListener('click', () => {
+  avatarMenu.classList.toggle('hidden');
+});
+document.getElementById('homeNav').addEventListener('click', () => {
+  avatarMenu.classList.add('hidden');
+  showHome();
+  loadMedia();
+});
+document.getElementById('settingsNav').addEventListener('click', () => {
+  avatarMenu.classList.add('hidden');
+  showSettings();
+  loadLibraries();
+});
+document.addEventListener('click', (e) => {
+  if (!avatarWrap.contains(e.target)) {
+    avatarMenu.classList.add('hidden');
+  }
+});
 const overlay = document.getElementById('playerOverlay');
 const playerVideo = document.getElementById('playerVideo');
 const playerTitle = document.getElementById('playerTitle');
@@ -962,7 +1098,13 @@ document.getElementById('scanBtn').addEventListener('click', scanNow);
 document.getElementById('addLibBtn').addEventListener('click', addLibrary);
 setAuthed(!!access);
 if (access) {
+  applyAvatar();
+  buildAvatarPicker();
+  showHome();
   loadLibraries().then(loadMedia);
+} else {
+  applyAvatar();
+  buildAvatarPicker();
 }
 </script>
 </body>
