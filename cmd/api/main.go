@@ -3636,8 +3636,15 @@ async function sendProgress(posMs, force){
 }
 function maybeSendProgress(force){
   if (!currentMediaId || !access) return;
-  const posMs = Math.floor(getGlobalTime() * 1000);
+  let posMs = Math.floor(getGlobalTime() * 1000);
   if (!isFinite(posMs) || posMs < 1000) return;
+  const durationSec = getDuration();
+  if (isFinite(durationSec) && durationSec > 0) {
+    const durationMs = durationSec * 1000;
+    if (posMs >= durationMs * 0.95) {
+      posMs = 0;
+    }
+  }
   const now = Date.now();
   if (!force) {
     if (now - lastProgressSentAt < 10000) return;

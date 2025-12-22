@@ -121,6 +121,9 @@ func (s *Service) ListContinue(ctx context.Context, userID string, limit int) ([
 	var updated time.Time
 	items := []ProgressItem{}
 	for iter.Scan(&mediaID, &pos, &updated) {
+		if pos < 10000 {
+			continue
+		}
 		it, err := s.Get(ctx, mediaID.String())
 		if err != nil {
 			continue
