@@ -134,6 +134,7 @@ func main() {
 		r.Get("/libraries", handleListLibraries(session, cfg.Keyspace))
 		r.Post("/libraries", handleCreateLibrary(session, cfg.Keyspace))
 		r.Delete("/libraries/{id}", handleDeleteLibrary(session, cfg.Keyspace))
+		r.Get("/debug/tmdb", handleDebugTmdb(mediaSvc))
 		r.Post("/scan", func(w http.ResponseWriter, r *http.Request) {
 			added, err := scanWithLibraries(r.Context(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot)
 			if err != nil {
@@ -429,6 +430,31 @@ func handleDeleteLibrary(session *gocql.Session, keyspace string) http.HandlerFu
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
+	}
+}
+
+func handleDebugTmdb(svc *media.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		title := r.URL.Query().Get("title")
+		yearStr := r.URL.Query().Get("year")
+		imdb := r.URL.Query().Get("imdb")
+		if title == "" && imdb == "" {
+			errorJSON(w, http.StatusBadRequest, "title or imdb required")
+			return
+		}
+		year := 0
+		if yearStr != "" {
+			if _, err := fmt.Sscanf(yearStr, "%d", &year); err != nil {
+				errorJSON(w, http.StatusBadRequest, "invalid year")
+				return
+			}
+		}
+		out, err := svc.DebugTmdb(title, year, imdb)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

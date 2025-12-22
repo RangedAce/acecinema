@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -469,16 +470,62 @@ func (s *Service) tmdbSearchMovie(title string, year int) (map[string]string, st
 	return meta, tmdbPosterURL(m.PosterPath), nil
 }
 
+func (s *Service) DebugTmdb(title string, year int, imdbID string) (map[string]interface{}, error) {
+	if s.tmdbKey == "" {
+		return nil, fmt.Errorf("tmdb key missing")
+	}
+	if imdbID != "" {
+		endpoint := "https://api.themoviedb.org/3/find/" + url.PathEscape(imdbID)
+		params := url.Values{}
+		params.Set("api_key", s.tmdbKey)
+		params.Set("external_source", "imdb_id")
+		params.Set("language", "fr-FR")
+		reqURL := endpoint + "?" + params.Encode()
+		body, err := getJSON(reqURL)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"url":  redactApiKey(reqURL),
+			"body": string(body),
+		}, nil
+	}
+	endpoint := "https://api.themoviedb.org/3/search/movie"
+	params := url.Values{}
+	params.Set("api_key", s.tmdbKey)
+	params.Set("query", title)
+	params.Set("language", "fr-FR")
+	if year > 0 {
+		params.Set("year", fmt.Sprintf("%d", year))
+	}
+	reqURL := endpoint + "?" + params.Encode()
+	body, err := getJSON(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"url":  redactApiKey(reqURL),
+		"body": string(body),
+	}, nil
+}
+
 func getJSON(url string) ([]byte, error) {
+	log.Printf("tmdb request: %s", redactApiKey(url))
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("tmdb response status=%d", resp.StatusCode)
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("tmdb response: %s", snippet(body, 300))
+	return body, nil
 }
 
 func tmdbPosterURL(path string) string {
@@ -493,6 +540,29 @@ func yearFromDate(date string) string {
 		return ""
 	}
 	return date[:4]
+}
+
+func redactApiKey(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	if q.Has("api_key") {
+		q.Set("api_key", "REDACTED")
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
+func snippet(data []byte, max int) string {
+	if len(data) <= max {
+		return string(data)
+	}
+	return string(data[:max]) + "..."
 }
 
 func isVideo(path string) bool {
