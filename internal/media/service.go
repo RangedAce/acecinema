@@ -212,8 +212,10 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, path string, info os.FileInfo, title string, year int) (bool, error) {
 	inserted := false
 	var existing string
-	err := s.session.Query(fmt.Sprintf(`SELECT id FROM %s.media_items WHERE id=?`, s.keyspace), mediaID).
-		WithContext(ctx).Scan(&existing)
+	var currentTitle string
+	var currentYear int
+	err := s.session.Query(fmt.Sprintf(`SELECT id,title,year FROM %s.media_items WHERE id=?`, s.keyspace), mediaID).
+		WithContext(ctx).Scan(&existing, &currentTitle, &currentYear)
 	if err != nil {
 		if !errors.Is(err, gocql.ErrNotFound) {
 			return false, err
@@ -223,6 +225,13 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, pa
 			return false, err
 		}
 		inserted = true
+	} else {
+		if title != "" && (currentTitle != title || (year > 0 && currentYear != year)) {
+			if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET title=?, year=? WHERE id=?`, s.keyspace),
+				title, year, mediaID).WithContext(ctx).Exec(); err != nil {
+				return false, err
+			}
+		}
 	}
 
 	found := false
@@ -497,6 +506,7 @@ func isVideo(path string) bool {
 func parseTitle(name string) (string, int) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	base = strings.ReplaceAll(base, ".", " ")
+	base = stripBracketed(base)
 	parts := strings.Fields(base)
 	year := 0
 	if len(parts) > 0 {
@@ -506,9 +516,55 @@ func parseTitle(name string) (string, int) {
 			parts = parts[:len(parts)-1]
 		}
 	}
+	parts = filterNoise(parts)
 	title := strings.Title(strings.Join(parts, " "))
 	if title == "" {
 		title = base
 	}
 	return title, year
+}
+
+func stripBracketed(s string) string {
+	out := s
+	for _, pair := range []struct{ open, close string }{
+		{"[", "]"},
+		{"(", ")"},
+		{"{", "}"},
+	} {
+		for {
+			start := strings.Index(out, pair.open)
+			if start == -1 {
+				break
+			}
+			end := strings.Index(out[start+1:], pair.close)
+			if end == -1 {
+				break
+			}
+			out = strings.TrimSpace(out[:start] + " " + out[start+1+end+1:])
+		}
+	}
+	return out
+}
+
+func filterNoise(parts []string) []string {
+	blacklist := map[string]bool{
+		"1080p": true, "2160p": true, "720p": true, "480p": true,
+		"x264": true, "x265": true, "h264": true, "h265": true, "hevc": true,
+		"bluray": true, "brrip": true, "webrip": true, "webdl": true, "hdrip": true,
+		"dvdrip": true, "remux": true, "hdr": true, "dv": true, "dolby": true,
+		"dts": true, "truehd": true, "atmos": true, "yify": true, "rarbg": true,
+		"proper": true, "repack": true, "extended": true, "unrated": true,
+	}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		key := strings.ToLower(strings.Trim(p, "-_"))
+		if key == "" || blacklist[key] {
+			continue
+		}
+		if strings.HasPrefix(key, "s") && strings.Contains(key, "e") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
