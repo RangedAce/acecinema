@@ -101,6 +101,16 @@ func (s *Service) UpdateProgress(ctx context.Context, userID, mediaID string, po
 		pos, time.Now(), userID, mediaID).WithContext(ctx).Exec()
 }
 
+func (s *Service) Reset(ctx context.Context) error {
+	tables := []string{"media_assets", "media_paths", "media_items", "play_state"}
+	for _, table := range tables {
+		if err := s.session.Query(fmt.Sprintf("TRUNCATE %s.%s", s.keyspace, table)).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Scan walks the media root and inserts items/assets.
 func (s *Service) Scan(ctx context.Context) (int, error) {
 	if s.mediaRoot == "" {
@@ -237,7 +247,7 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, pa
 		}
 	}
 
-	if inserted || (refreshExisting && (currentPoster == "" || len(currentMeta) == 0)) {
+	if inserted || refreshExisting || currentPoster == "" || len(currentMeta) == 0 {
 		if err := s.enrichMetadata(ctx, mediaID, path, title, year); err != nil {
 			return false, err
 		}
@@ -335,6 +345,25 @@ func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePa
 	}
 	if len(meta) == 0 && poster == "" {
 		return nil
+	}
+	tmdbTitle := strings.TrimSpace(meta["title"])
+	tmdbYear := 0
+	if metaYear := strings.TrimSpace(meta["year"]); metaYear != "" {
+		fmt.Sscanf(metaYear, "%d", &tmdbYear)
+	}
+	if tmdbTitle != "" && (tmdbTitle != updatedTitle || (tmdbYear > 0 && tmdbYear != updatedYear)) {
+		titleToSet := updatedTitle
+		yearToSet := updatedYear
+		if tmdbTitle != "" {
+			titleToSet = tmdbTitle
+		}
+		if tmdbYear > 0 {
+			yearToSet = tmdbYear
+		}
+		if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET title=?, year=? WHERE id=?`, s.keyspace),
+			titleToSet, yearToSet, mediaID).WithContext(ctx).Exec(); err != nil {
+			return err
+		}
 	}
 	if poster != "" {
 		return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=?, poster_url=? WHERE id=?`, s.keyspace),

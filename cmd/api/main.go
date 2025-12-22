@@ -162,6 +162,13 @@ func main() {
 		r.Get("/debug/tmdb", handleDebugTmdb(mediaSvc))
 		r.Get("/debug/hls/{session}", handleDebugHLS(hlsMgr))
 		r.Post("/scan", func(w http.ResponseWriter, r *http.Request) {
+			reset := strings.TrimSpace(r.URL.Query().Get("reset"))
+			if reset == "1" || strings.EqualFold(reset, "true") {
+				if err := mediaSvc.Reset(r.Context()); err != nil {
+					errorJSON(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
 			added, err := scanWithLibraries(r.Context(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot, true)
 			if err != nil {
 				errorJSON(w, http.StatusInternalServerError, err.Error())
@@ -547,17 +554,27 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			return
 		}
 		indexPath := filepath.Join(sess.dir, "index.m3u8")
-		waitForFile(indexPath, 60*time.Second)
-		if _, err := os.Stat(indexPath); err != nil {
+		ready := waitForFile(indexPath, 20*time.Second)
+		if !ready {
 			logMsg := readLogSnippet(sess.logPath, 4000)
 			if sess.isDone() {
-				errorJSON(w, http.StatusInternalServerError, "ffmpeg exited: "+logMsg)
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"error":   "ffmpeg exited",
+					"session": sess.id,
+					"log":     logMsg,
+				})
 				return
 			}
-			errorJSON(w, http.StatusInternalServerError, "hls not ready (session "+sess.id+"): "+logMsg)
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{
+				"status":   "starting",
+				"url":      "/hls/" + sess.id + "/index.m3u8",
+				"session":  sess.id,
+				"duration": duration,
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":   "ready",
 			"url":      "/hls/" + sess.id + "/index.m3u8",
 			"session":  sess.id,
 			"duration": duration,
@@ -585,8 +602,7 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 			return
 		}
 		full := filepath.Join(sess.dir, clean)
-		waitForFile(full, 12*time.Second)
-		if _, err := os.Stat(full); err != nil {
+		if !waitForFile(full, 12*time.Second) {
 			http.NotFound(w, r)
 			return
 		}
@@ -740,15 +756,47 @@ type audioTrack struct {
 func probeDuration(path string) (string, error) {
 	cmd := exec.Command("ffprobe",
 		"-v", "error",
-		"-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1",
+		"-show_entries", "format=duration:stream=duration",
+		"-of", "json",
 		path,
 	)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	var parsed struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+		Streams []struct {
+			Duration string `json:"duration"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return "", err
+	}
+	best := parseDurationValue(parsed.Format.Duration)
+	for _, s := range parsed.Streams {
+		if d := parseDurationValue(s.Duration); d > best {
+			best = d
+		}
+	}
+	if best <= 0 {
+		return "", fmt.Errorf("duration not found")
+	}
+	return fmt.Sprintf("%.3f", best), nil
+}
+
+func parseDurationValue(raw string) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "N/A" {
+		return 0
+	}
+	val, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0
+	}
+	return val
 }
 
 func probeAudioTracks(path string) ([]audioTrack, error) {
@@ -873,12 +921,13 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		"-g", "48",
 		"-keyint_min", "48",
 		"-sc_threshold", "0",
+		"-max_muxing_queue_size", "1024",
 		"-c:a", "aac",
 		"-ac", "2",
 		"-b:a", "160k",
 		"-sn",
 		"-f", "hls",
-		"-hls_time", "8",
+		"-hls_time", "4",
 		"-hls_list_size", "0",
 		"-hls_playlist_type", "vod",
 		"-hls_flags", "independent_segments",
@@ -919,14 +968,15 @@ func randomID() string {
 	return hex.EncodeToString(buf)
 }
 
-func waitForFile(path string, max time.Duration) {
+func waitForFile(path string, max time.Duration) bool {
 	deadline := time.Now().Add(max)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
-			return
+			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return false
 }
 
 func readLogSnippet(path string, max int) string {
@@ -1149,6 +1199,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       overflow: hidden;
       border: 1px solid #333;
       position: relative;
+      display: flex;
+      flex-direction: column;
+      max-height: 90vh;
     }
     .player-controls {
       display: flex;
@@ -1201,23 +1254,25 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       -webkit-appearance: none;
       appearance: none;
       height: 6px;
-      border-radius: 999px;
-      background: linear-gradient(90deg, #000 0%, #000 var(--fill, 0%), #2f2f2f var(--fill, 0%), #2f2f2f 100%);
+      background: transparent;
       outline: none;
       padding: 0;
       margin: 0;
       border: none;
+      --thumb-size: 14px;
+      --track-color: #2f2f2f;
+      --fill-color: #000;
     }
     input[type=range]::-webkit-slider-runnable-track {
       height: 6px;
       border-radius: 999px;
-      background: transparent;
+      background: linear-gradient(90deg, var(--fill-color) 0, var(--fill-color) var(--fill-px, 0px), var(--track-color) var(--fill-px, 0px), var(--track-color) 100%);
     }
     input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none;
       appearance: none;
-      width: 14px;
-      height: 14px;
+      width: var(--thumb-size);
+      height: var(--thumb-size);
       border-radius: 50%;
       background: #d0cfcf;
       border: 1px solid #3a3a3a;
@@ -1226,16 +1281,16 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     input[type=range]::-moz-range-track {
       height: 6px;
       border-radius: 999px;
-      background: #2f2f2f;
+      background: var(--track-color);
     }
     input[type=range]::-moz-range-progress {
       height: 6px;
       border-radius: 999px;
-      background: #000;
+      background: var(--fill-color);
     }
     input[type=range]::-moz-range-thumb {
-      width: 14px;
-      height: 14px;
+      width: var(--thumb-size);
+      height: var(--thumb-size);
       border-radius: 50%;
       background: #d0cfcf;
       border: 1px solid #3a3a3a;
@@ -1274,7 +1329,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .player-controls {
       z-index: 2;
     }
-    video { width: 100%; height: auto; display: block; background: #000; }
+    video { width: 100%; height: auto; max-height: 90vh; object-fit: contain; display: block; background: #000; }
     @media (max-width: 640px) {
       .row { flex-direction: column; align-items: stretch; }
       input { min-width: 100%; }
@@ -1340,14 +1395,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       </div>
       <video id="playerVideo" playsinline></video>
       <div class="player-controls">
-        <button id="playToggle" class="player-ctrl">▶</button>
+        <button id="playToggle" class="player-ctrl">&#9654;</button>
         <div id="timeLabel" class="time-label">0:00 / 0:00</div>
         <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" step="0.1" value="0"/>
         <input id="volumeBar" class="volume-bar" type="range" min="0" max="1" step="0.01" value="1"/>
         <select id="audioSelect">
           <option value="-1">Auto</option>
         </select>
-        <button id="fullscreenBtn" class="player-ctrl">⤢</button>
+        <button id="fullscreenBtn" class="player-ctrl">&#x26F6;</button>
         <div id="audioHint" style="color:#bbb;"></div>
       </div>
     </div>
@@ -1386,6 +1441,37 @@ function showSettings() {
 function setStatus(msg, isError) {
   const level = isError ? 'error' : 'log';
   console[level]('status:', msg);
+}
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+async function waitForManifest(url, sessionId, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 60000);
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { method: 'GET', cache: 'no-store' });
+      if (res.ok) {
+        return true;
+      }
+    } catch (err) {
+      console.error('manifest check failed', err);
+    }
+    await sleep(1200);
+  }
+  if (sessionId && access) {
+    try {
+      const debugRes = await fetch('/admin/debug/hls/' + sessionId, { headers: { Authorization: 'Bearer ' + access } });
+      if (debugRes.ok) {
+        const dbg = await debugRes.json();
+        console.error('hls debug log:', dbg.log || dbg);
+      } else {
+        console.error('hls debug failed:', debugRes.status);
+      }
+    } catch (err) {
+      console.error('hls debug error', err);
+    }
+  }
+  return false;
 }
 async function login() {
   const res = await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});
@@ -1450,21 +1536,26 @@ async function loadMedia() {
       img.className = 'poster';
       img.loading = 'lazy';
       img.src = m.poster_url;
-      img.alt = m.title || 'poster';
+      const meta = m.metadata || {};
+      const metaTitle = meta.title || meta.original_title || meta.name || meta.original_name || '';
+      const displayTitle = metaTitle || m.title || 'Sans titre';
+      img.alt = displayTitle;
       el.appendChild(img);
     }
     const title = document.createElement('div');
     title.className = 'card-title';
-    const metaTitle = m.metadata && (m.metadata.title || m.metadata.original_title) ? (m.metadata.title || m.metadata.original_title) : '';
-    const metaYear = m.metadata && m.metadata.year ? m.metadata.year : '';
-    title.textContent = m.title || metaTitle || 'Sans titre';
+    const meta = m.metadata || {};
+    const metaTitle = meta.title || meta.original_title || meta.name || meta.original_name || '';
+    const metaYear = meta.year || '';
+    const displayTitle = metaTitle || m.title || 'Sans titre';
+    title.textContent = displayTitle;
     const year = document.createElement('div');
     year.className = 'card-year';
     year.textContent = m.year ? String(m.year) : (metaYear || '');
     const btn = document.createElement('button');
     btn.className = 'play-btn';
-    btn.textContent = '▶';
-    btn.addEventListener('click', () => play(m.id, m.title));
+    btn.innerHTML = '&#9654;';
+    btn.addEventListener('click', () => play(m.id, displayTitle));
     el.appendChild(title);
     el.appendChild(year);
     el.appendChild(btn);
@@ -1493,7 +1584,7 @@ async function play(id, titleText){
 }
 async function scanNow(){
   if (!access) { setStatus('Not logged in', true); return; }
-  const res = await fetch('/admin/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
+  const res = await fetch('/admin/scan?reset=1',{method:'POST',headers:{Authorization:'Bearer '+access}});
   let payload = null;
   try { payload = await res.json(); } catch (e) {}
   if (!res.ok) {
@@ -1639,13 +1730,15 @@ const seekBar = document.getElementById('seekBar');
 const volumeBar = document.getElementById('volumeBar');
 const timeLabel = document.getElementById('timeLabel');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
+const ICON_PLAY = '&#9654;';
+const ICON_PAUSE = '&#10074;&#10074;';
 let hls = null;
 let currentAssetPath = '';
 let currentMediaId = '';
 let currentAudioIndex = -1;
+let currentHlsSession = '';
+let currentHlsUrl = '';
 let hlsDuration = 0;
-let segmentDurations = [];
-let segmentOffsets = [];
 let controlsTimer = null;
 let isFullscreen = false;
 function openPlayer(titleText){
@@ -1654,6 +1747,10 @@ function openPlayer(titleText){
   playerVideo.volume = 1;
   volumeBar.value = '1';
   updateRangeFill(volumeBar);
+  playToggle.innerHTML = ICON_PLAY;
+  seekBar.value = '0';
+  updateRangeFill(seekBar);
+  timeLabel.textContent = '0:00 / 0:00';
   overlay.style.display = 'flex';
   showControls();
 }
@@ -1667,6 +1764,13 @@ function closePlayer(){
   playerVideo.load();
   currentAssetPath = '';
   currentMediaId = '';
+  currentHlsSession = '';
+  currentHlsUrl = '';
+  hlsDuration = 0;
+  if (controlsTimer) {
+    clearTimeout(controlsTimer);
+    controlsTimer = null;
+  }
   overlay.style.display = 'none';
 }
 function showControls(){
@@ -1708,45 +1812,64 @@ async function loadAudioTracks(mediaId){
 }
 async function startHls(path, audioIndex){
   hlsDuration = 0;
-  segmentDurations = [];
-  segmentOffsets = [];
-  const url = '/stream/hls?path='+encodeURIComponent(path)+'&audio='+encodeURIComponent(audioIndex);
-  const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
-  if (!res.ok) {
-    setStatus('HLS failed: ' + res.status, true);
-    return;
-  }
-    const data = await res.json();
-    if (!data.url) {
-      setStatus('HLS url missing', true);
-      return;
-    }
-    if (data.duration) {
-      const d = parseFloat(data.duration);
-      if (!isNaN(d)) {
-        hlsDuration = d;
-        seekBar.max = d.toFixed(2);
-        updateRangeFill(seekBar);
-      }
-    }
+  currentHlsSession = '';
+  currentHlsUrl = '';
   if (hls) {
     hls.destroy();
     hls = null;
   }
+  playerVideo.pause();
+  playerVideo.removeAttribute('src');
+  playerVideo.load();
+  const url = '/stream/hls?path='+encodeURIComponent(path)+'&audio='+encodeURIComponent(audioIndex);
+  const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
+  const bodyText = await res.text();
+  let data = null;
+  try { data = JSON.parse(bodyText); } catch (e) {}
+  if (!res.ok) {
+    if (data && data.log) {
+      console.error('hls ffmpeg log:', data.log);
+    }
+    if (data && data.session) {
+      currentHlsSession = data.session;
+    }
+    const message = data && data.error ? data.error : (bodyText || res.status);
+    setStatus('HLS failed: ' + message, true);
+    return;
+  }
+  if (!data || !data.url) {
+    setStatus('HLS url missing', true);
+    return;
+  }
+  currentHlsSession = data.session || '';
+  currentHlsUrl = data.url;
+  if (data.status === 'starting') {
+    setStatus('HLS en demarrage...', false);
+  }
+  if (data.duration) {
+    const d = parseFloat(data.duration);
+    if (!isNaN(d)) {
+      hlsDuration = d;
+      seekBar.max = d.toFixed(2);
+      updateRangeFill(seekBar);
+    }
+  }
+  const ready = await waitForManifest(data.url, data.session, 90000);
+  if (!ready) {
+    setStatus('HLS manifest not ready', true);
+    return;
+  }
   if (window.Hls && Hls.isSupported()) {
     hls = new Hls({
-      maxBufferLength: 120,
-      maxMaxBufferLength: 240,
-      backBufferLength: 60,
-      maxBufferSize: 120 * 1000 * 1000
+      maxBufferLength: 180,
+      maxMaxBufferLength: 360,
+      backBufferLength: 90,
+      maxBufferSize: 256 * 1000 * 1000
     });
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
-    });
-    hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
-      if (data && data.details && data.details.fragments) {
-        segmentDurations = data.details.fragments.map(f => f.duration || 0);
-        segmentOffsets = buildSectionOffsets(segmentDurations);
+      if (data && data.fatal) {
+        setStatus('HLS failed: ' + (data.details || data.type), true);
       }
     });
     hls.loadSource(data.url);
@@ -1754,7 +1877,7 @@ async function startHls(path, audioIndex){
   } else {
     playerVideo.src = data.url;
   }
-  playerVideo.play().catch(()=>{});
+  playerVideo.play().catch(err => console.error('play failed', err));
 }
 audioSelect.addEventListener('change', async () => {
   const val = parseInt(audioSelect.value, 10);
@@ -1766,38 +1889,27 @@ audioSelect.addEventListener('change', async () => {
 function formatTime(seconds){
   if (!isFinite(seconds)) { return '0:00'; }
   const s = Math.floor(seconds % 60);
-  const m = Math.floor(seconds / 60);
-  return m + ':' + (s < 10 ? '0' + s : s);
+  const m = Math.floor((seconds / 60) % 60);
+  const h = Math.floor(seconds / 3600);
+  const mm = (m < 10 ? '0' + m : m);
+  const ss = (s < 10 ? '0' + s : s);
+  if (h > 0) {
+    return h + ':' + mm + ':' + ss;
+  }
+  return m + ':' + ss;
 }
 function updateRangeFill(range){
   const min = parseFloat(range.min || '0');
   const max = parseFloat(range.max || '100');
   const val = parseFloat(range.value || '0');
-  const pct = max > min ? ((val - min) / (max - min)) * 100 : 0;
-  range.style.setProperty('--fill', pct + '%');
-}
-function buildSectionOffsets(durations){
-  const offsets = [];
-  let acc = 0;
-  for (let i = 0; i < durations.length; i++) {
-    offsets.push(acc);
-    acc += durations[i];
-  }
-  return offsets;
-}
-function globalToLocal(t){
-  for (let i = 0; i < segmentOffsets.length; i++) {
-    const start = segmentOffsets[i];
-    const end = (i + 1 < segmentOffsets.length) ? segmentOffsets[i + 1] : (start + (segmentDurations[i] || 0));
-    if (t >= start && t < end) {
-      return { index: i, localTime: t - start };
-    }
-  }
-  return { index: 0, localTime: t };
-}
-function localToGlobal(i, tLocal){
-  const start = segmentOffsets[i] || 0;
-  return start + tLocal;
+  const pct = max > min ? ((val - min) / (max - min)) : 0;
+  const pctClamped = Math.min(Math.max(pct, 0), 1);
+  const width = range.getBoundingClientRect().width || 1;
+  const thumbSize = parseFloat(getComputedStyle(range).getPropertyValue('--thumb-size')) || 14;
+  const usable = Math.max(width - thumbSize, 1);
+  const fillPx = (usable * pctClamped) + (thumbSize / 2);
+  range.style.setProperty('--fill', (pctClamped * 100).toFixed(2) + '%');
+  range.style.setProperty('--fill-px', fillPx.toFixed(2) + 'px');
 }
 function getDuration(){
   if (hlsDuration > 0) {
@@ -1811,18 +1923,13 @@ function getDuration(){
   }
   return 0;
 }
-function getSeekableRange(){
-  const duration = getDuration();
-  if (duration > 0 && isFinite(duration)) {
-    return { start: 0, end: duration };
-  }
-  if (playerVideo.seekable && playerVideo.seekable.length > 0) {
-    const start = playerVideo.seekable.start(0);
-    const end = playerVideo.seekable.end(playerVideo.seekable.length - 1);
-    return { start, end };
-  }
-  return { start: 0, end: 0 };
-}
+  playerVideo.addEventListener('loadedmetadata', () => {
+    const duration = getDuration();
+    if (!duration) { return; }
+    seekBar.max = duration.toFixed(2);
+    updateRangeFill(seekBar);
+    timeLabel.textContent = formatTime(playerVideo.currentTime) + ' / ' + formatTime(duration);
+  });
   playerVideo.addEventListener('timeupdate', () => {
     const duration = getDuration();
     if (!duration) { return; }
@@ -1835,6 +1942,8 @@ function getSeekableRange(){
 seekBar.addEventListener('input', () => {
   const duration = getDuration();
   if (!duration) { return; }
+  const pos = Math.min(Math.max(parseFloat(seekBar.value), 0), duration);
+  timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
   updateRangeFill(seekBar);
 });
 seekBar.addEventListener('change', () => {
@@ -1854,10 +1963,14 @@ volumeBar.addEventListener('input', () => {
   updateRangeFill(volumeBar);
 });
 playToggle.addEventListener('click', () => {
-  if (playerVideo.paused) { playerVideo.play(); } else { playerVideo.pause(); }
+  if (playerVideo.paused) {
+    playerVideo.play().catch(err => console.error('play failed', err));
+  } else {
+    playerVideo.pause();
+  }
 });
-playerVideo.addEventListener('play', () => { playToggle.textContent = '⏸'; });
-playerVideo.addEventListener('pause', () => { playToggle.textContent = '▶'; });
+playerVideo.addEventListener('play', () => { playToggle.innerHTML = ICON_PAUSE; });
+playerVideo.addEventListener('pause', () => { playToggle.innerHTML = ICON_PLAY; });
 fullscreenBtn.addEventListener('click', () => {
   if (document.fullscreenElement) {
     document.exitFullscreen();
@@ -1886,6 +1999,10 @@ document.getElementById('refreshBtn').addEventListener('click', refresh);
 document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('scanBtn').addEventListener('click', scanNow);
 document.getElementById('addLibBtn').addEventListener('click', addLibrary);
+window.addEventListener('resize', () => {
+  updateRangeFill(seekBar);
+  updateRangeFill(volumeBar);
+});
 setAuthed(!!access);
 if (access) {
   applyAvatar();
