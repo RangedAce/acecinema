@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,8 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"crypto/rand"
-	"encoding/hex"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -44,20 +46,25 @@ var buildVersion = envDefault("IMAGE_TAG", envDefault("BUILD_VERSION", "dev"))
 
 type hlsSession struct {
 	id         string
+	userID     string
+	mediaID    string
 	path       string
 	audioIndex int
+	startSec   float64
 	dir        string
 	logPath    string
 	cmd        *exec.Cmd
 	exitErr   error
 	done      chan struct{}
 	lastAccess time.Time
+	createdAt  time.Time
 }
 
 type hlsManager struct {
 	baseDir  string
 	mu       sync.Mutex
 	sessions map[string]*hlsSession
+	byUser   map[string]string
 }
 
 func loadConfig() (config, error) {
@@ -183,7 +190,10 @@ func main() {
 	})
 
 	r.Get("/stream", handleStream(session, cfg.Keyspace, cfg.MediaRoot, authSvc))
+	r.Get("/stream/file", handleStreamFile(session, cfg.Keyspace, cfg.MediaRoot, authSvc))
+	r.With(authSvc.RequireAuth).Get("/stream/session", handleStreamSession(hlsMgr, mediaSvc, session, cfg.Keyspace, cfg.MediaRoot, authSvc))
 	r.With(authSvc.RequireAuth).Get("/stream/hls", handleStreamHLS(hlsMgr, session, cfg.Keyspace, cfg.MediaRoot))
+	r.Get("/stream/s/{session}/{file}", handleHLSFile(hlsMgr))
 	r.Get("/hls/{session}/{file}", handleHLSFile(hlsMgr))
 
 	go func() {
@@ -533,6 +543,142 @@ func handleStream(session *gocql.Session, keyspace, mediaRoot string, authSvc *a
 	}
 }
 
+func handleStreamFile(session *gocql.Session, keyspace, mediaRoot string, authSvc *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := tokenFromRequest(r)
+		if token == "" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		if _, err := authSvc.ParseToken(token); err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			errorJSON(w, http.StatusBadRequest, "path required")
+			return
+		}
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, err := resolveStreamPath(path, roots)
+		if err != nil {
+			errorJSON(w, http.StatusForbidden, err.Error())
+			return
+		}
+		file, err := os.Open(full)
+		if err != nil {
+			errorJSON(w, http.StatusNotFound, "file not found")
+			return
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "stat failed")
+			return
+		}
+		if ct := contentTypeForPath(full); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+	}
+}
+
+func handleStreamSession(mgr *hlsManager, svc *media.Service, session *gocql.Session, keyspace, mediaRoot string, authSvc *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := auth.ClaimsFromContext(r.Context())
+		if claims == nil || claims.UserID == "" {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		mediaID := strings.TrimSpace(r.URL.Query().Get("mediaId"))
+		if mediaID == "" {
+			errorJSON(w, http.StatusBadRequest, "mediaId required")
+			return
+		}
+		startStr := strings.TrimSpace(r.URL.Query().Get("start"))
+		startSec := 0.0
+		if startStr != "" {
+			if v, err := strconv.ParseFloat(startStr, 64); err == nil && v > 0 {
+				startSec = v
+			}
+		}
+		audioStr := strings.TrimSpace(r.URL.Query().Get("audio"))
+		audioIndex := -1
+		if audioStr != "" {
+			if v, err := strconv.Atoi(audioStr); err == nil {
+				audioIndex = v
+			}
+		}
+		assets, err := svc.Assets(r.Context(), mediaID)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(assets) == 0 {
+			errorJSON(w, http.StatusNotFound, "no assets")
+			return
+		}
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, err := resolveStreamPath(assets[0].Path, roots)
+		if err != nil {
+			errorJSON(w, http.StatusForbidden, err.Error())
+			return
+		}
+		durationStr, _ := probeDuration(full)
+		duration := parseDurationValue(durationStr)
+		if ok, _ := isDirectPlayable(full); ok {
+			token := tokenFromRequest(r)
+			if token == "" {
+				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
+			streamURL := "/stream/file?path=" + url.QueryEscape(assets[0].Path) + "&token=" + url.QueryEscape(token)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"mode":     "direct",
+				"url":      streamURL,
+				"duration": duration,
+			})
+			return
+		}
+		sess, err := mgr.CreateForUser(claims.UserID, mediaID, full, audioIndex, startSec)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		indexPath := filepath.Join(sess.dir, "index.m3u8")
+		status := "ready"
+		if !waitForFile(indexPath, 20*time.Second) {
+			if sess.isDone() {
+				logMsg := readLogSnippet(sess.logPath, 4000)
+				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"error":   "ffmpeg exited",
+					"session": sess.id,
+					"log":     logMsg,
+				})
+				return
+			}
+			status = "starting"
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"mode":     "hls",
+			"url":      "/stream/s/" + sess.id + "/index.m3u8",
+			"session":  sess.id,
+			"duration": duration,
+			"status":   status,
+			"start":    startSec,
+		})
+	}
+}
+
 func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoot string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Query().Get("path")
@@ -547,6 +693,13 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 				audioIndex = v
 			}
 		}
+		startStr := r.URL.Query().Get("start")
+		startSec := 0.0
+		if startStr != "" {
+			if v, err := strconv.ParseFloat(startStr, 64); err == nil && v > 0 {
+				startSec = v
+			}
+		}
 		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
 		if err != nil {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
@@ -558,7 +711,7 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			return
 		}
 		duration, _ := probeDuration(full)
-		sess, err := mgr.Create(full, audioIndex)
+		sess, err := mgr.Create(full, audioIndex, startSec)
 		if err != nil {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
 			return
@@ -605,7 +758,7 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		sess.lastAccess = time.Now()
+		mgr.Touch(sessionID)
 		clean := filepath.Clean(file)
 		if strings.Contains(clean, "..") || filepath.IsAbs(clean) {
 			http.NotFound(w, r)
@@ -954,18 +1107,99 @@ func probeVideoInfo(path string) (videoInfo, error) {
 	}, nil
 }
 
+func probeContainer(path string) (string, error) {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-show_entries", "format=format_name",
+		"-of", "json",
+		path,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Format struct {
+			FormatName string `json:"format_name"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return "", err
+	}
+	return parsed.Format.FormatName, nil
+}
+
+func isDirectPlayable(path string) (bool, string) {
+	format, err := probeContainer(path)
+	if err != nil {
+		return false, "format"
+	}
+	video, err := probeVideoInfo(path)
+	if err != nil {
+		return false, "video"
+	}
+	audio, _ := probeAudioTracks(path)
+	containerOK := false
+	allowed := map[string]bool{"mp4": true, "mov": true, "m4v": true}
+	for _, part := range strings.Split(format, ",") {
+		if allowed[strings.TrimSpace(part)] {
+			containerOK = true
+			break
+		}
+	}
+	videoOK := strings.EqualFold(video.Codec, "h264")
+	audioOK := true
+	if len(audio) > 0 {
+		codec := strings.ToLower(audio[0].Codec)
+		audioOK = codec == "aac" || codec == "mp3"
+	}
+	if !containerOK {
+		return false, "container"
+	}
+	if !videoOK {
+		return false, "video"
+	}
+	if !audioOK {
+		return false, "audio"
+	}
+	return true, ""
+}
+
+func contentTypeForPath(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".mp4", ".m4v", ".mov":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	}
+	return mime.TypeByExtension(ext)
+}
+
 func newHlsManager() *hlsManager {
 	base := "/tmp/acecinema-hls"
 	_ = os.MkdirAll(base, 0o755)
 	m := &hlsManager{
 		baseDir:  base,
 		sessions: make(map[string]*hlsSession),
+		byUser:   make(map[string]string),
 	}
 	go m.cleanupLoop()
 	return m
 }
 
-func (m *hlsManager) Create(path string, audioIndex int) (*hlsSession, error) {
+func (m *hlsManager) Create(path string, audioIndex int, startSec float64) (*hlsSession, error) {
+	return m.createSession("", "", path, audioIndex, startSec)
+}
+
+func (m *hlsManager) CreateForUser(userID, mediaID, path string, audioIndex int, startSec float64) (*hlsSession, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("user required")
+	}
+	return m.createSession(userID, mediaID, path, audioIndex, startSec)
+}
+
+func (m *hlsManager) createSession(userID, mediaID, path string, audioIndex int, startSec float64) (*hlsSession, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
@@ -976,14 +1210,24 @@ func (m *hlsManager) Create(path string, audioIndex int) (*hlsSession, error) {
 	}
 	sess := &hlsSession{
 		id:         id,
+		userID:     userID,
+		mediaID:    mediaID,
 		path:       path,
 		audioIndex: audioIndex,
+		startSec:   startSec,
 		dir:        dir,
 		logPath:    filepath.Join(dir, "ffmpeg.log"),
 		done:       make(chan struct{}),
 		lastAccess: time.Now(),
+		createdAt:  time.Now(),
 	}
 	m.mu.Lock()
+	if userID != "" {
+		if existingID, ok := m.byUser[userID]; ok {
+			m.removeLocked(existingID)
+		}
+		m.byUser[userID] = id
+	}
 	m.sessions[id] = sess
 	m.mu.Unlock()
 	go m.startSession(sess)
@@ -997,10 +1241,10 @@ func (m *hlsManager) Get(id string) *hlsSession {
 }
 
 func (m *hlsManager) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		m.cleanupOld(30 * time.Minute)
+		m.cleanupOld(3 * time.Minute)
 	}
 }
 
@@ -1010,25 +1254,62 @@ func (m *hlsManager) cleanupOld(maxAge time.Duration) {
 	now := time.Now()
 	for id, sess := range m.sessions {
 		if now.Sub(sess.lastAccess) > maxAge {
-			if sess.cmd != nil && sess.cmd.Process != nil {
-				_ = sess.cmd.Process.Kill()
-			}
-			_ = os.RemoveAll(sess.dir)
-			delete(m.sessions, id)
+			m.removeLocked(id)
 		}
 	}
 }
 
+func (m *hlsManager) removeLocked(id string) {
+	sess, ok := m.sessions[id]
+	if !ok {
+		return
+	}
+	if sess.cmd != nil && sess.cmd.Process != nil {
+		_ = sess.cmd.Process.Kill()
+	}
+	_ = os.RemoveAll(sess.dir)
+	delete(m.sessions, id)
+	if sess.userID != "" {
+		if current, ok := m.byUser[sess.userID]; ok && current == id {
+			delete(m.byUser, sess.userID)
+		}
+	}
+}
+
+func (m *hlsManager) Touch(id string) {
+	m.mu.Lock()
+	if sess, ok := m.sessions[id]; ok {
+		sess.lastAccess = time.Now()
+	}
+	m.mu.Unlock()
+}
+
 func (m *hlsManager) startSession(sess *hlsSession) {
-	log.Printf("hls start: path=%s audio=%d dir=%s", sess.path, sess.audioIndex, sess.dir)
+	log.Printf("hls start: user=%s media=%s path=%s audio=%d start=%.3f dir=%s", sess.userID, sess.mediaID, sess.path, sess.audioIndex, sess.startSec, sess.dir)
 	mapAudio := "0:a:0?"
 	if sess.audioIndex >= 0 {
 		mapAudio = fmt.Sprintf("0:a:%d?", sess.audioIndex)
+	}
+	audioCopy := false
+	if tracks, err := probeAudioTracks(sess.path); err == nil && len(tracks) > 0 {
+		idx := 0
+		if sess.audioIndex >= 0 && sess.audioIndex < len(tracks) {
+			idx = sess.audioIndex
+		}
+		codec := strings.ToLower(tracks[idx].Codec)
+		if codec == "aac" || codec == "mp3" {
+			audioCopy = true
+		}
 	}
 	args := []string{
 		"-hide_banner", "-loglevel", "error",
 		"-analyzeduration", "20M",
 		"-probesize", "20M",
+	}
+	if sess.startSec > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", sess.startSec))
+	}
+	args = append(args,
 		"-i", sess.path,
 		"-map", "0:v:0",
 		"-map", mapAudio,
@@ -1040,17 +1321,21 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		"-keyint_min", "48",
 		"-sc_threshold", "0",
 		"-max_muxing_queue_size", "1024",
-		"-c:a", "aac",
-		"-ac", "2",
-		"-b:a", "160k",
+	}
+	if audioCopy {
+		args = append(args, "-c:a", "copy")
+	} else {
+		args = append(args, "-c:a", "aac", "-ac", "2", "-b:a", "160k")
+	}
+	args = append(args,
 		"-sn",
 		"-f", "hls",
 		"-hls_time", "4",
-		"-hls_list_size", "0",
-		"-hls_flags", "independent_segments",
+		"-hls_list_size", "10",
+		"-hls_flags", "independent_segments+delete_segments",
 		"-hls_segment_filename", filepath.Join(sess.dir, "seg%03d.ts"),
 		filepath.Join(sess.dir, "index.m3u8"),
-	}
+	)
 	cmd := exec.Command("ffmpeg", args...)
 	// prevent ffmpeg from hanging on stdin
 	stdin, err := os.Open(os.DevNull)
@@ -2637,26 +2922,13 @@ async function loadMedia() {
 }
 async function play(id, titleText){
   if (!access) { setStatus('Not logged in', true); return; }
-  const res = await fetch('/media/'+id+'/assets',{headers:{Authorization:'Bearer '+access}});
-  if (!res.ok) {
-    if (res.status === 401) {
-      logout();
-      setStatus('Session expiree, reconnecte-toi.', true);
-      return;
-    }
-    setStatus('Assets load failed: ' + res.status, true);
-    return;
-  }
-  const assets = await res.json();
-  if(assets.length===0){setStatus('No assets for media', true); return;}
-  currentAssetPath = assets[0].path;
   currentMediaId = id;
-  hlsDuration = 0;
+  catalogDuration = 0;
   hlsBaseOffset = 0;
   pendingSeekTime = null;
   openPlayer(titleText || 'Lecture');
   await loadAudioTracks(id);
-  await startHls(currentAssetPath, currentAudioIndex);
+  await startPlayback(id, 0);
   await loadPlaybackInfo(id);
 }
 async function loadPlaybackInfo(mediaId) {
@@ -2669,12 +2941,16 @@ async function loadPlaybackInfo(mediaId) {
     const info = await res.json();
     const duration = parseFloat(info.duration || 0);
     if (isFinite(duration) && duration > 0) {
-      hlsDuration = duration;
-      seekBar.max = duration.toFixed(2);
-      updateRangeFill(seekBar);
-      timeLabel.textContent = formatTime(getGlobalTime()) + ' / ' + formatTime(duration);
-      if (pendingSeekTime !== null) {
-        requestSeek(pendingSeekTime);
+      if (!catalogDuration || catalogDuration <= 0) {
+        catalogDuration = duration;
+      }
+      if (currentStreamMode === 'hls') {
+        seekBar.max = duration.toFixed(2);
+        updateRangeFill(seekBar);
+        timeLabel.textContent = formatTime(getGlobalTime()) + ' / ' + formatTime(duration);
+        if (pendingSeekTime !== null) {
+          requestSeek(pendingSeekTime);
+        }
       }
     }
   } catch (err) {
@@ -2845,12 +3121,12 @@ const fullscreenBtn = document.getElementById('fullscreenBtn');
 const ICON_PLAY = '&#9654;';
 const ICON_PAUSE = '&#10074;&#10074;';
 let hls = null;
-let currentAssetPath = '';
 let currentMediaId = '';
 let currentAudioIndex = -1;
+let currentStreamMode = 'hls';
+let currentStreamUrl = '';
 let currentHlsSession = '';
-let currentHlsUrl = '';
-let hlsDuration = 0;
+let catalogDuration = 0;
 let controlsTimer = null;
 let isFullscreen = false;
 let isSeeking = false;
@@ -2859,6 +3135,10 @@ let pendingSeekTime = null;
 let hlsBaseOffset = 0;
 let seekRaf = null;
 let seekRafValue = null;
+let lastRestartAt = 0;
+let restartTimer = null;
+let queuedRestartTarget = null;
+const RESTART_COOLDOWN_MS = 1200;
 function debugSeekLog() {
   if (!DEBUG_SEEK) return;
   console.log.apply(console, arguments);
@@ -2919,13 +3199,19 @@ function closePlayer(){
   playerVideo.pause();
   playerVideo.removeAttribute('src');
   playerVideo.load();
-  currentAssetPath = '';
   currentMediaId = '';
+  currentStreamMode = 'hls';
+  currentStreamUrl = '';
   currentHlsSession = '';
-  currentHlsUrl = '';
-  hlsDuration = 0;
+  catalogDuration = 0;
   hlsBaseOffset = 0;
   pendingSeekTime = null;
+  lastRestartAt = 0;
+  queuedRestartTarget = null;
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
   if (controlsTimer) {
     clearTimeout(controlsTimer);
     controlsTimer = null;
@@ -2966,11 +3252,73 @@ async function loadAudioTracks(mediaId){
   currentAudioIndex = fr ? fr.audio_index : tracks[0].audio_index;
   audioSelect.value = String(currentAudioIndex);
 }
-async function startHls(path, audioIndex){
+async function startPlayback(mediaId, startAt){
   hlsBaseOffset = 0;
   pendingSeekTime = null;
+  currentStreamUrl = '';
   currentHlsSession = '';
-  currentHlsUrl = '';
+  const startValue = (isFinite(startAt) && startAt > 0) ? startAt : 0;
+  const audioIndex = isFinite(currentAudioIndex) ? currentAudioIndex : -1;
+  const url = '/stream/session?mediaId=' + encodeURIComponent(mediaId) + '&audio=' + encodeURIComponent(audioIndex) + (startValue > 0 ? ('&start=' + encodeURIComponent(startValue.toFixed(2))) : '');
+  const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
+  const bodyText = await res.text();
+  let data = null;
+  try { data = JSON.parse(bodyText); } catch (e) {}
+  if (!res.ok) {
+    if (data && data.log) {
+      console.error('ffmpeg log:', data.log);
+    }
+    const message = data && data.error ? data.error : (bodyText || res.status);
+    setStatus('Stream failed: ' + message, true);
+    return;
+  }
+  if (!data || !data.url) {
+    setStatus('Stream url missing', true);
+    return;
+  }
+  currentStreamMode = data.mode || 'hls';
+  currentStreamUrl = data.url;
+  currentHlsSession = data.session || '';
+  const duration = parseFloat(data.duration || 0);
+  if (isFinite(duration) && duration > 0) {
+    catalogDuration = duration;
+    seekBar.max = duration.toFixed(2);
+    updateRangeFill(seekBar);
+  }
+  if (currentStreamMode === 'direct') {
+    audioSelect.disabled = true;
+    await startDirect(data.url, startValue);
+    return;
+  }
+  audioSelect.disabled = false;
+  await startTranscode(data.url, data.session, startValue, data.status);
+}
+
+async function startDirect(url, startAt){
+  hlsBaseOffset = 0;
+  pendingSeekTime = null;
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
+  playerVideo.pause();
+  playerVideo.removeAttribute('src');
+  playerVideo.load();
+  const startValue = (isFinite(startAt) && startAt > 0) ? startAt : 0;
+  if (startValue > 0) {
+    pendingSeekTime = startValue;
+  }
+  playerVideo.src = url;
+  playerVideo.addEventListener('canplay', () => {
+    playerVideo.play().catch(err => console.error('play failed', err));
+  }, { once: true });
+  logTimelineState('start');
+}
+
+async function startTranscode(url, sessionId, startAt, status){
+  hlsBaseOffset = 0;
+  pendingSeekTime = null;
+  currentHlsSession = sessionId || '';
   let didAutoPlay = false;
   const tryAutoPlay = () => {
     if (didAutoPlay) return;
@@ -2990,40 +3338,21 @@ async function startHls(path, audioIndex){
   playerVideo.pause();
   playerVideo.removeAttribute('src');
   playerVideo.load();
-  const url = '/stream/hls?path='+encodeURIComponent(path)+'&audio='+encodeURIComponent(audioIndex);
-  const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
-  const bodyText = await res.text();
-  let data = null;
-  try { data = JSON.parse(bodyText); } catch (e) {}
-  if (!res.ok) {
-    if (data && data.log) {
-      console.error('hls ffmpeg log:', data.log);
-    }
-    if (data && data.session) {
-      currentHlsSession = data.session;
-    }
-    const message = data && data.error ? data.error : (bodyText || res.status);
-    setStatus('HLS failed: ' + message, true);
-    return;
+  const startValue = (isFinite(startAt) && startAt > 0) ? startAt : 0;
+  if (startValue > 0) {
+    hlsBaseOffset = startValue;
   }
-  if (!data || !data.url) {
-    setStatus('HLS url missing', true);
-    return;
+  if (catalogDuration > 0) {
+    seekBar.max = catalogDuration.toFixed(2);
+    updateRangeFill(seekBar);
   }
-  currentHlsSession = data.session || '';
-  currentHlsUrl = data.url;
-  if (data.status === 'starting') {
-    setStatus('HLS en demarrage...', false);
+  if (startValue > 0 && catalogDuration > 0) {
+    timeLabel.textContent = formatTime(startValue) + ' / ' + formatTime(catalogDuration);
   }
-  if (data.duration) {
-    const d = parseFloat(data.duration);
-    if (!isNaN(d)) {
-      hlsDuration = d;
-      seekBar.max = d.toFixed(2);
-      updateRangeFill(seekBar);
-    }
+  if (status === 'starting') {
+    setStatus('Transcode en demarrage...', false);
   }
-  const ready = await waitForManifest(data.url, data.session, 90000);
+  const ready = await waitForManifest(url, sessionId, 90000);
   if (!ready) {
     setStatus('HLS manifest not ready', true);
     return;
@@ -3040,20 +3369,14 @@ async function startHls(path, audioIndex){
     });
     hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
       if (!data || !data.details) return;
-      const total = parseFloat(data.details.totalduration || 0);
-      if (data.details.fragments && data.details.fragments.length > 0) {
+      if (hlsBaseOffset === 0 && data.details.fragments && data.details.fragments.length > 0) {
         const base = parseFloat(data.details.fragments[0].start || 0);
         if (isFinite(base) && base >= 0) {
           hlsBaseOffset = base;
         }
       }
-      if (isFinite(total) && total > 0) {
-        if (!hlsDuration || total > hlsDuration) {
-          hlsDuration = total;
-        }
-      }
-      if (hlsDuration > 0) {
-        seekBar.max = hlsDuration.toFixed(2);
+      if (catalogDuration > 0) {
+        seekBar.max = catalogDuration.toFixed(2);
         updateRangeFill(seekBar);
         if (pendingSeekTime !== null) {
           requestSeek(pendingSeekTime);
@@ -3076,12 +3399,12 @@ async function startHls(path, audioIndex){
         setStatus('HLS failed: ' + (data.details || data.type), true);
       }
     });
-    hls.loadSource(data.url);
+    hls.loadSource(url);
     hls.attachMedia(playerVideo);
     playerVideo.addEventListener('canplay', tryAutoPlay);
     logTimelineState('start');
   } else {
-    playerVideo.src = data.url;
+    playerVideo.src = url;
     playerVideo.addEventListener('canplay', tryAutoPlay);
     logTimelineState('start');
   }
@@ -3089,8 +3412,9 @@ async function startHls(path, audioIndex){
 audioSelect.addEventListener('change', async () => {
   const val = parseInt(audioSelect.value, 10);
   currentAudioIndex = isNaN(val) ? -1 : val;
-  if (currentAssetPath) {
-    await startHls(currentAssetPath, currentAudioIndex);
+  if (currentStreamMode === 'hls' && currentMediaId) {
+    const pos = getGlobalTime();
+    await startPlayback(currentMediaId, pos);
   }
 });
 function formatTime(seconds){
@@ -3114,14 +3438,17 @@ function updateRangeFill(range){
   range.style.setProperty('--fill-percent', (pctClamped * 100).toFixed(2) + '%');
 }
 function getDuration(){
-  if (hlsDuration > 0) {
-    return hlsDuration;
+  if (currentStreamMode === 'hls' && catalogDuration > 0) {
+    return catalogDuration;
   }
   if (isFinite(playerVideo.duration) && playerVideo.duration > 0) {
     return playerVideo.duration;
   }
   if (playerVideo.seekable && playerVideo.seekable.length > 0) {
     return playerVideo.seekable.end(playerVideo.seekable.length - 1);
+  }
+  if (catalogDuration > 0) {
+    return catalogDuration;
   }
   const fallback = parseFloat(seekBar.max || '0');
   if (isFinite(fallback) && fallback > 0) {
@@ -3130,8 +3457,11 @@ function getDuration(){
   return 0;
 }
 function getGlobalTime(){
-  const base = hlsBaseOffset || 0;
-  return playerVideo.currentTime + base;
+  if (currentStreamMode === 'hls') {
+    const base = hlsBaseOffset || 0;
+    return playerVideo.currentTime + base;
+  }
+  return playerVideo.currentTime;
 }
 function requestSeek(target){
   const duration = getDuration();
@@ -3161,6 +3491,69 @@ function requestSeek(target){
     }, 200);
   }
   pendingSeekTime = null;
+}
+function getBufferedRanges() {
+  const ranges = [];
+  const buffered = playerVideo.buffered;
+  if (!buffered) return ranges;
+  for (let i = 0; i < buffered.length; i += 1) {
+    const start = buffered.start(i) + (hlsBaseOffset || 0);
+    const end = buffered.end(i) + (hlsBaseOffset || 0);
+    ranges.push({ start: start, end: end });
+  }
+  return ranges;
+}
+function canSeekLocally(target) {
+  if (currentStreamMode !== 'hls') {
+    return true;
+  }
+  const ranges = getBufferedRanges();
+  if (!ranges.length) return false;
+  return ranges.some(r => target >= (r.start + 0.2) && target <= (r.end - 0.2));
+}
+async function handleSeekTarget(target, allowRestart) {
+  if (!isFinite(target)) return;
+  if (currentStreamMode === 'direct') {
+    requestSeek(target);
+    return;
+  }
+  if (canSeekLocally(target)) {
+    if (DEBUG_SEEK) {
+      debugSeekLog('[seek] local', { target: target, offset: hlsBaseOffset });
+    }
+    requestSeek(target);
+    return;
+  }
+  if (allowRestart && currentMediaId) {
+    if (DEBUG_SEEK) {
+      debugSeekLog('[seek] restart', { target: target, offset: hlsBaseOffset });
+    }
+    setStatus('Repositionnement...', false);
+    scheduleRestart(target);
+    return;
+  }
+  pendingSeekTime = target;
+}
+function scheduleRestart(target) {
+  if (!currentMediaId) return;
+  const now = Date.now();
+  const elapsed = now - lastRestartAt;
+  if (elapsed >= RESTART_COOLDOWN_MS) {
+    lastRestartAt = now;
+    startPlayback(currentMediaId, target);
+    return;
+  }
+  queuedRestartTarget = target;
+  if (restartTimer) return;
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    if (queuedRestartTarget !== null) {
+      const t = queuedRestartTarget;
+      queuedRestartTarget = null;
+      lastRestartAt = Date.now();
+      startPlayback(currentMediaId, t);
+    }
+  }, Math.max(RESTART_COOLDOWN_MS - elapsed, 0));
 }
 function seekFromPointer(evt){
   const duration = getDuration();
@@ -3214,7 +3607,7 @@ seekBar.addEventListener('input', () => {
 seekBar.addEventListener('change', () => {
   const t = parseFloat(seekBar.value);
   logSeekEvent('change', null);
-  requestSeek(t);
+  handleSeekTarget(t, true);
   isSeeking = false;
 });
 seekBar.addEventListener('pointerdown', (e) => {
@@ -3224,7 +3617,7 @@ seekBar.addEventListener('pointerdown', (e) => {
   seekBar.setPointerCapture(e.pointerId);
   logSeekEvent('pointerdown', e);
   const value = seekFromPointer(e);
-  requestSeek(value);
+  handleSeekTarget(value, false);
 });
 seekBar.addEventListener('pointermove', (e) => {
   if (!seekPointerActive) return;
@@ -3234,7 +3627,9 @@ seekBar.addEventListener('pointermove', (e) => {
   seekRaf = requestAnimationFrame(() => {
     seekRaf = null;
     if (seekRafValue !== null) {
-      requestSeek(seekRafValue);
+      if (canSeekLocally(seekRafValue)) {
+        requestSeek(seekRafValue);
+      }
     }
   });
 });
@@ -3242,7 +3637,7 @@ seekBar.addEventListener('pointerup', (e) => {
   if (!seekPointerActive) return;
   logSeekEvent('pointerup', e);
   const value = seekFromPointer(e);
-  requestSeek(value);
+  handleSeekTarget(value, true);
   if (seekBar.hasPointerCapture(e.pointerId)) {
     seekBar.releasePointerCapture(e.pointerId);
   }
@@ -3259,7 +3654,7 @@ seekBar.addEventListener('pointercancel', (e) => {
 seekBar.addEventListener('click', (e) => {
   logSeekEvent('click', e);
   const value = seekFromPointer(e);
-  requestSeek(value);
+  handleSeekTarget(value, true);
   logTimelineState('click');
 });
 volumeBar.addEventListener('input', () => {
