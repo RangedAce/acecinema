@@ -49,6 +49,8 @@ type hlsSession struct {
 	dir        string
 	logPath    string
 	cmd        *exec.Cmd
+	exitErr   error
+	done      chan struct{}
 	lastAccess time.Time
 }
 
@@ -544,9 +546,14 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			return
 		}
 		indexPath := filepath.Join(sess.dir, "index.m3u8")
-		waitForFile(indexPath, 25*time.Second)
+		waitForFile(indexPath, 60*time.Second)
 		if _, err := os.Stat(indexPath); err != nil {
-			errorJSON(w, http.StatusInternalServerError, "hls not ready (session "+sess.id+")")
+			logMsg := readLogSnippet(sess.logPath, 4000)
+			if sess.isDone() {
+				errorJSON(w, http.StatusInternalServerError, "ffmpeg exited: "+logMsg)
+				return
+			}
+			errorJSON(w, http.StatusInternalServerError, "hls not ready (session "+sess.id+"): "+logMsg)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
@@ -793,6 +800,7 @@ func (m *hlsManager) Create(path string, audioIndex int) (*hlsSession, error) {
 		audioIndex: audioIndex,
 		dir:        dir,
 		logPath:    filepath.Join(dir, "ffmpeg.log"),
+		done:       make(chan struct{}),
 		lastAccess: time.Now(),
 	}
 	m.mu.Lock()
@@ -868,6 +876,17 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 	sess.cmd = cmd
 	if err := cmd.Run(); err != nil {
 		log.Printf("hls ffmpeg exit: %v", err)
+		sess.exitErr = err
+	}
+	close(sess.done)
+}
+
+func (s *hlsSession) isDone() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -887,6 +906,17 @@ func waitForFile(path string, max time.Duration) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func readLogSnippet(path string, max int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "no log"
+	}
+	if len(data) <= max {
+		return string(data)
+	}
+	return string(data[len(data)-max:])
 }
 
 func parseConsistency(c string) gocql.Consistency {
@@ -1097,6 +1127,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       border-radius: 16px;
       overflow: hidden;
       border: 1px solid #333;
+      position: relative;
     }
     .player-controls {
       display: flex;
@@ -1107,6 +1138,27 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       color: #fff;
       font-size: 12px;
       border-top: 1px solid #2a2a2a;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .player-shell.controls-visible .player-controls {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .player-shell.is-fullscreen {
+      width: 100%;
+      height: 100%;
+      border-radius: 0;
+    }
+    .player-shell.is-fullscreen video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
     .player-ctrl {
       background: #262626;
@@ -1493,6 +1545,7 @@ document.addEventListener('click', (e) => {
   }
 });
 const overlay = document.getElementById('playerOverlay');
+const playerShell = document.querySelector('.player-shell');
 const playerVideo = document.getElementById('playerVideo');
 const playerTitle = document.getElementById('playerTitle');
 const audioSelect = document.getElementById('audioSelect');
@@ -1506,11 +1559,15 @@ let hls = null;
 let currentAssetPath = '';
 let currentMediaId = '';
 let currentAudioIndex = -1;
+let hlsDuration = 0;
+let controlsTimer = null;
+let isFullscreen = false;
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
   playerVideo.volume = 1;
   overlay.style.display = 'flex';
+  showControls();
 }
 function closePlayer(){
   if (hls) {
@@ -1524,6 +1581,19 @@ function closePlayer(){
   currentMediaId = '';
   overlay.style.display = 'none';
 }
+function showControls(){
+  playerShell.classList.add('controls-visible');
+  if (!isFullscreen) {
+    return;
+  }
+  if (controlsTimer) {
+    clearTimeout(controlsTimer);
+  }
+  controlsTimer = setTimeout(() => {
+    playerShell.classList.remove('controls-visible');
+  }, 2500);
+}
+overlay.addEventListener('mousemove', showControls);
 async function loadAudioTracks(mediaId){
   audioSelect.innerHTML = '<option value="-1">Auto</option>';
   audioHint.textContent = '';
@@ -1569,6 +1639,11 @@ async function startHls(path, audioIndex){
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
     });
+    hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+      if (data && data.details && data.details.totalduration) {
+        hlsDuration = data.details.totalduration;
+      }
+    });
     hls.loadSource(data.url);
     hls.attachMedia(playerVideo);
   } else {
@@ -1589,16 +1664,42 @@ function formatTime(seconds){
   const m = Math.floor(seconds / 60);
   return m + ':' + (s < 10 ? '0' + s : s);
 }
+function getDuration(){
+  if (isFinite(playerVideo.duration) && playerVideo.duration > 0) {
+    return playerVideo.duration;
+  }
+  if (hlsDuration > 0) {
+    return hlsDuration;
+  }
+  if (playerVideo.seekable && playerVideo.seekable.length > 0) {
+    return playerVideo.seekable.end(playerVideo.seekable.length - 1);
+  }
+  return 0;
+}
+function getSeekableRange(){
+  if (playerVideo.seekable && playerVideo.seekable.length > 0) {
+    const start = playerVideo.seekable.start(0);
+    const end = playerVideo.seekable.end(playerVideo.seekable.length - 1);
+    return { start, end };
+  }
+  const duration = getDuration();
+  return { start: 0, end: duration };
+}
 playerVideo.addEventListener('timeupdate', () => {
-  if (!isFinite(playerVideo.duration)) { return; }
-  const pct = (playerVideo.currentTime / playerVideo.duration) * 1000;
+  const duration = getDuration();
+  if (!duration) { return; }
+  const range = getSeekableRange();
+  const pos = Math.min(Math.max(playerVideo.currentTime, range.start), range.end);
+  const pct = ((pos - range.start) / (range.end - range.start)) * 1000;
   seekBar.value = String(Math.floor(pct));
-  timeLabel.textContent = formatTime(playerVideo.currentTime) + ' / ' + formatTime(playerVideo.duration);
+  timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
 });
 seekBar.addEventListener('input', () => {
-  if (!isFinite(playerVideo.duration)) { return; }
+  const duration = getDuration();
+  if (!duration) { return; }
+  const range = getSeekableRange();
   const pct = parseInt(seekBar.value, 10) / 1000;
-  playerVideo.currentTime = playerVideo.duration * pct;
+  playerVideo.currentTime = range.start + (range.end - range.start) * pct;
 });
 volumeBar.addEventListener('input', () => {
   playerVideo.volume = parseFloat(volumeBar.value);
@@ -1609,11 +1710,19 @@ playToggle.addEventListener('click', () => {
 playerVideo.addEventListener('play', () => { playToggle.textContent = '⏸'; });
 playerVideo.addEventListener('pause', () => { playToggle.textContent = '▶'; });
 fullscreenBtn.addEventListener('click', () => {
-  const el = document.querySelector('.player-shell');
   if (document.fullscreenElement) {
     document.exitFullscreen();
-  } else if (el && el.requestFullscreen) {
-    el.requestFullscreen();
+  } else if (playerShell && playerShell.requestFullscreen) {
+    playerShell.requestFullscreen();
+  }
+});
+document.addEventListener('fullscreenchange', () => {
+  isFullscreen = !!document.fullscreenElement;
+  playerShell.classList.toggle('is-fullscreen', isFullscreen);
+  if (isFullscreen) {
+    showControls();
+  } else {
+    playerShell.classList.add('controls-visible');
   }
 });
 document.getElementById('playerClose').addEventListener('click', closePlayer);
