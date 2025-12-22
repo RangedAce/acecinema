@@ -541,6 +541,12 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			errorJSON(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		indexPath := filepath.Join(sess.dir, "index.m3u8")
+		waitForFile(indexPath, 12*time.Second)
+		if _, err := os.Stat(indexPath); err != nil {
+			errorJSON(w, http.StatusInternalServerError, "hls not ready")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{
 			"url": "/hls/" + sess.id + "/index.m3u8",
 		})
@@ -567,7 +573,7 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 			return
 		}
 		full := filepath.Join(sess.dir, clean)
-		waitForFile(full, 5*time.Second)
+		waitForFile(full, 12*time.Second)
 		if _, err := os.Stat(full); err != nil {
 			http.NotFound(w, r)
 			return
