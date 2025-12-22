@@ -603,13 +603,6 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 		}
 		full := filepath.Join(sess.dir, clean)
 		if !waitForFile(full, 40*time.Second) {
-			log.Printf("!!! DEBUG: waitForFile timed out for %s", full)
-			files, err := filepath.Glob(filepath.Join(sess.dir, "*"))
-			if err != nil {
-				log.Printf("!!! DEBUG: failed to list files in %s: %v", sess.dir, err)
-			} else {
-				log.Printf("!!! DEBUG: contents of %s: %v", sess.dir, files)
-			}
 			http.NotFound(w, r)
 			return
 		}
@@ -917,7 +910,7 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		mapAudio = fmt.Sprintf("0:a:%d?", sess.audioIndex)
 	}
 	args := []string{
-		"-hide_banner", "-loglevel", "info",
+		"-hide_banner", "-loglevel", "error",
 		"-analyzeduration", "20M",
 		"-probesize", "20M",
 		"-i", sess.path,
@@ -938,7 +931,6 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		"-f", "hls",
 		"-hls_time", "4",
 		"-hls_list_size", "0",
-		"-hls_playlist_type", "vod",
 		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", filepath.Join(sess.dir, "seg%03d.ts"),
 		filepath.Join(sess.dir, "index.m3u8"),
