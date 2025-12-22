@@ -40,7 +40,7 @@ type config struct {
 	Replication int
 }
 
-var buildVersion = envDefault("BUILD_VERSION", "dev")
+var buildVersion = envDefault("IMAGE_TAG", envDefault("BUILD_VERSION", "dev"))
 
 type hlsSession struct {
 	id         string
@@ -149,6 +149,7 @@ func main() {
 		r.Get("/", handleListMedia(mediaSvc))
 		r.Get("/{id}", handleGetMedia(mediaSvc))
 		r.Get("/{id}/assets", handleGetAssets(mediaSvc))
+		r.Get("/{id}/info", handleMediaInfo(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 		r.Get("/{id}/tracks", handleAudioTracks(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 	})
 
@@ -645,6 +646,57 @@ func handleAudioTracks(svc *media.Service, session *gocql.Session, keyspace, med
 	}
 }
 
+type videoInfo struct {
+	Codec     string `json:"codec"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	FrameRate string `json:"frame_rate"`
+}
+
+type mediaInfo struct {
+	Duration float64     `json:"duration"`
+	Video    videoInfo   `json:"video"`
+	Audio    []audioTrack `json:"audio_tracks"`
+}
+
+func handleMediaInfo(svc *media.Service, session *gocql.Session, keyspace, mediaRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			errorJSON(w, http.StatusBadRequest, "id required")
+			return
+		}
+		assets, err := svc.Assets(r.Context(), id)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(assets) == 0 {
+			errorJSON(w, http.StatusNotFound, "no assets")
+			return
+		}
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, err := resolveStreamPath(assets[0].Path, roots)
+		if err != nil {
+			errorJSON(w, http.StatusForbidden, err.Error())
+			return
+		}
+		durationStr, _ := probeDuration(full)
+		duration, _ := strconv.ParseFloat(durationStr, 64)
+		video, _ := probeVideoInfo(full)
+		audio, _ := probeAudioTracks(full)
+		writeJSON(w, http.StatusOK, mediaInfo{
+			Duration: duration,
+			Video:    video,
+			Audio:    audio,
+		})
+	}
+}
+
 func handleDebugHLS(mgr *hlsManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := chi.URLParam(r, "session")
@@ -836,6 +888,40 @@ func probeAudioTracks(path string) ([]audioTrack, error) {
 		tracks = append(tracks, track)
 	}
 	return tracks, nil
+}
+
+func probeVideoInfo(path string) (videoInfo, error) {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name,width,height,avg_frame_rate",
+		"-of", "json", path,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return videoInfo{}, err
+	}
+	var parsed struct {
+		Streams []struct {
+			CodecName   string `json:"codec_name"`
+			Width       int    `json:"width"`
+			Height      int    `json:"height"`
+			AvgFrameRate string `json:"avg_frame_rate"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return videoInfo{}, err
+	}
+	if len(parsed.Streams) == 0 {
+		return videoInfo{}, fmt.Errorf("no video stream")
+	}
+	s := parsed.Streams[0]
+	return videoInfo{
+		Codec:     s.CodecName,
+		Width:     s.Width,
+		Height:    s.Height,
+		FrameRate: s.AvgFrameRate,
+	}, nil
 }
 
 func newHlsManager() *hlsManager {
@@ -1269,6 +1355,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       background: radial-gradient(circle at top, rgba(99, 102, 241, 0.35), transparent 60%), var(--bg-secondary);
       display: flex;
       align-items: flex-end;
+      transition: background 0.3s ease;
     }
     .hero::before {
       content: "";
@@ -1294,6 +1381,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       display: flex;
       flex-direction: column;
       gap: 12px;
+      transition: opacity 0.35s ease, transform 0.35s ease;
+    }
+    .hero.fade .hero-content {
+      opacity: 0;
+      transform: translateY(6px);
     }
     .hero-title {
       font-size: 30px;
@@ -1326,13 +1418,13 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
       gap: 16px;
     }
     .media-row {
       display: grid;
       grid-auto-flow: column;
-      grid-auto-columns: minmax(150px, 180px);
+      grid-auto-columns: minmax(210px, 250px);
       gap: 16px;
       overflow-x: auto;
       padding-bottom: 8px;
@@ -1359,6 +1451,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       gap: 10px;
       padding: 12px;
       transition: all 0.2s ease;
+      cursor: pointer;
     }
     .card:hover {
       transform: scale(1.03);
@@ -1417,6 +1510,139 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       height: 100%;
       background: var(--accent);
       width: 0%;
+    }
+    .details-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 14, 39, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 998;
+      padding: 24px;
+      backdrop-filter: blur(8px);
+    }
+    .details-modal {
+      width: min(1100px, 95%);
+      max-height: 90vh;
+      overflow-y: auto;
+      background: var(--glass);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 30px 80px rgba(3, 6, 20, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .details-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .details-title {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .details-original {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+    .details-close {
+      background: rgba(236, 72, 153, 0.2);
+      border: 1px solid rgba(236, 72, 153, 0.5);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .details-body {
+      display: grid;
+      grid-template-columns: minmax(200px, 260px) 1fr;
+      gap: 24px;
+    }
+    .details-poster {
+      width: 100%;
+      border-radius: 12px;
+      object-fit: cover;
+      aspect-ratio: 2 / 3;
+      background: rgba(22, 27, 51, 0.8);
+    }
+    .details-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+    .details-tagline {
+      color: var(--accent-2);
+      font-style: italic;
+      margin-top: 8px;
+    }
+    .details-synopsis {
+      margin-top: 10px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .details-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .details-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .details-grid .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .details-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .chip {
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11px;
+    }
+    .cast-row {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(140px, 170px);
+      gap: 12px;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }
+    .cast-card {
+      background: rgba(22, 27, 51, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .cast-name {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .cast-role {
+      color: var(--text-muted);
+      font-size: 12px;
     }
     .meta { color: var(--text-muted); font-size: 12px; }
     .player-overlay {
@@ -1528,11 +1754,12 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       --thumb-size: 14px;
       --track-color: rgba(255, 255, 255, 0.2);
       --fill-color: #6366F1;
+      --fill-percent: 0%;
     }
     input[type=range]::-webkit-slider-runnable-track {
       height: 6px;
       border-radius: 999px;
-      background: linear-gradient(90deg, var(--fill-color) 0, var(--fill-color) var(--fill-px, 0px), var(--track-color) var(--fill-px, 0px), var(--track-color) 100%);
+      background: linear-gradient(90deg, var(--fill-color) 0%, var(--fill-color) var(--fill-percent), var(--track-color) var(--fill-percent), var(--track-color) 100%);
     }
     input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none;
@@ -1725,6 +1952,60 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       </div>
     </main>
   </div>
+  <div id="detailsOverlay" class="details-overlay hidden">
+    <div class="details-modal">
+      <div class="details-header">
+        <div>
+          <div id="detailsTitle" class="details-title"></div>
+          <div id="detailsOriginal" class="details-original"></div>
+          <div id="detailsMeta" class="details-meta"></div>
+        </div>
+        <button id="detailsClose" class="details-close">Fermer</button>
+      </div>
+      <div class="details-body">
+        <img id="detailsPoster" class="details-poster" alt="Poster"/>
+        <div>
+          <div id="detailsTagline" class="details-tagline"></div>
+          <div id="detailsSynopsis" class="details-synopsis"></div>
+          <div class="details-actions">
+            <button id="detailsPlay">Lecture</button>
+            <button id="detailsAdd" class="secondary">Ma liste</button>
+          </div>
+          <div id="detailsGenres" class="details-chips"></div>
+          <div class="details-grid">
+            <div>
+              <div class="label">Qualite video</div>
+              <div id="detailsQuality" class="mono"></div>
+            </div>
+            <div>
+              <div class="label">Pistes audio</div>
+              <div id="detailsAudio" class="mono"></div>
+            </div>
+            <div>
+              <div class="label">Realisateur</div>
+              <div id="detailsDirector"></div>
+            </div>
+            <div>
+              <div class="label">Scenario</div>
+              <div id="detailsWriter"></div>
+            </div>
+            <div>
+              <div class="label">Studios</div>
+              <div id="detailsStudios"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="section-title">Casting</div>
+        <div id="detailsCast" class="cast-row"></div>
+      </div>
+      <div>
+        <div class="section-title">Dans le meme style</div>
+        <div id="detailsSimilar" class="media-row"></div>
+      </div>
+    </div>
+  </div>
   <div id="playerOverlay" class="player-overlay">
     <div class="player-shell">
       <div class="player-bar">
@@ -1760,6 +2041,24 @@ const heroDesc = document.getElementById('heroDesc');
 const heroMeta = document.getElementById('heroMeta');
 const heroPlay = document.getElementById('heroPlay');
 const heroAdd = document.getElementById('heroAdd');
+const detailsOverlay = document.getElementById('detailsOverlay');
+const detailsTitle = document.getElementById('detailsTitle');
+const detailsOriginal = document.getElementById('detailsOriginal');
+const detailsMeta = document.getElementById('detailsMeta');
+const detailsPoster = document.getElementById('detailsPoster');
+const detailsTagline = document.getElementById('detailsTagline');
+const detailsSynopsis = document.getElementById('detailsSynopsis');
+const detailsPlay = document.getElementById('detailsPlay');
+const detailsAdd = document.getElementById('detailsAdd');
+const detailsGenres = document.getElementById('detailsGenres');
+const detailsQuality = document.getElementById('detailsQuality');
+const detailsAudio = document.getElementById('detailsAudio');
+const detailsDirector = document.getElementById('detailsDirector');
+const detailsWriter = document.getElementById('detailsWriter');
+const detailsStudios = document.getElementById('detailsStudios');
+const detailsCast = document.getElementById('detailsCast');
+const detailsSimilar = document.getElementById('detailsSimilar');
+const detailsClose = document.getElementById('detailsClose');
 const adminPanel = document.getElementById('adminPanel');
 const libList = document.getElementById('libList');
 const scanBtn = document.getElementById('scanBtn');
@@ -1776,6 +2075,9 @@ const navList = document.getElementById('navList');
 const navSettings = document.getElementById('navSettings');
 let mediaCache = [];
 let searchQuery = '';
+let heroItems = [];
+let heroIndex = 0;
+let heroTimer = null;
 function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
@@ -1786,6 +2088,12 @@ function setAuthed(isAuthed) {
       searchInput.value = '';
       searchQuery = '';
     }
+  }
+  if (!isAuthed && heroTimer) {
+    clearInterval(heroTimer);
+    heroTimer = null;
+    heroItems = [];
+    heroIndex = 0;
   }
   if (access) {
     console.log('token:', access);
@@ -1839,6 +2147,207 @@ function buildBadges(m) {
   }
   return badges;
 }
+function parseJSONList(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+function formatRuntime(runtimeMin, durationSec) {
+  let minutes = 0;
+  if (runtimeMin) {
+    minutes = parseInt(runtimeMin, 10);
+  } else if (durationSec) {
+    minutes = Math.round(durationSec / 60);
+  }
+  return minutes > 0 ? (minutes + ' min') : '';
+}
+function formatEndTime(durationSec) {
+  if (!durationSec || !isFinite(durationSec)) return '';
+  const end = new Date(Date.now() + durationSec * 1000);
+  return end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function formatRating(meta) {
+  const rating = parseFloat(meta.rating || meta.vote_average || '');
+  if (!isFinite(rating) || rating <= 0) return '';
+  return rating.toFixed(1);
+}
+function parseFrameRate(value) {
+  if (!value) return 0;
+  if (typeof value === 'number') return value;
+  if (value.includes('/')) {
+    const parts = value.split('/');
+    const num = parseFloat(parts[0]);
+    const den = parseFloat(parts[1]);
+    if (den) return num / den;
+  }
+  const direct = parseFloat(value);
+  return isFinite(direct) ? direct : 0;
+}
+function formatVideoQuality(info) {
+  if (!info || !info.video) return '';
+  const video = info.video;
+  const height = parseInt(video.height || 0, 10);
+  const width = parseInt(video.width || 0, 10);
+  const codec = (video.codec || '').toUpperCase();
+  const fps = parseFrameRate(video.frame_rate);
+  const bits = [];
+  if (height) {
+    bits.push(height + 'p');
+  } else if (width && height) {
+    bits.push(width + 'x' + height);
+  }
+  if (codec) bits.push(codec);
+  if (fps) bits.push(fps.toFixed(2) + ' fps');
+  return bits.join(' / ');
+}
+function formatAudioTracks(tracks) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return '';
+  const labels = tracks.map(t => {
+    const parts = [];
+    if (t.language) parts.push(t.language.toUpperCase());
+    if (t.codec) parts.push(t.codec.toUpperCase());
+    if (t.channels) {
+      const ch = parseInt(t.channels, 10);
+      if (ch === 1) parts.push('1.0');
+      else if (ch === 2) parts.push('2.0');
+      else if (ch === 6) parts.push('5.1');
+      else if (ch === 8) parts.push('7.1');
+      else if (ch) parts.push(ch + 'ch');
+    }
+    return parts.filter(Boolean).join(' ');
+  }).filter(Boolean);
+  return labels.join(' / ');
+}
+function buildGenresChips(list) {
+  detailsGenres.innerHTML = '';
+  if (!list || list.length === 0) return;
+  list.forEach(g => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = g;
+    detailsGenres.appendChild(chip);
+  });
+}
+function buildCastRow(cast) {
+  detailsCast.innerHTML = '';
+  if (!Array.isArray(cast) || cast.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'meta';
+    empty.textContent = 'Casting indisponible';
+    detailsCast.appendChild(empty);
+    return;
+  }
+  cast.forEach(member => {
+    const card = document.createElement('div');
+    card.className = 'cast-card';
+    const name = document.createElement('div');
+    name.className = 'cast-name';
+    name.textContent = member.name || '';
+    const role = document.createElement('div');
+    role.className = 'cast-role';
+    role.textContent = member.character || '';
+    card.appendChild(name);
+    card.appendChild(role);
+    detailsCast.appendChild(card);
+  });
+}
+function buildSimilarRow(current) {
+  detailsSimilar.innerHTML = '';
+  if (!current) return;
+  const currentGenres = new Set(parseJSONList((current.metadata || {}).genres_json).map(g => String(g).toLowerCase()));
+  const candidates = mediaCache.filter(m => m.id !== current.id);
+  let list = candidates;
+  if (currentGenres.size > 0) {
+    list = candidates.filter(m => {
+      const genres = parseJSONList((m.metadata || {}).genres_json).map(g => String(g).toLowerCase());
+      return genres.some(g => currentGenres.has(g));
+    });
+  }
+  if (list.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'meta';
+    empty.textContent = 'Aucun contenu similaire.';
+    detailsSimilar.appendChild(empty);
+    return;
+  }
+  list.slice(0, 12).forEach(m => detailsSimilar.appendChild(createMediaCard(m)));
+}
+async function openDetails(item) {
+  if (!item) return;
+  const meta = item.metadata || {};
+  const titleText = getDisplayTitle(item);
+  const originalTitle = meta.original_title || meta.original_name || '';
+  const yearText = getDisplayYear(item);
+  const baseRuntime = formatRuntime(meta.runtime, 0);
+  const baseRating = formatRating(meta);
+  const baseMetaParts = [];
+  if (yearText) baseMetaParts.push(yearText);
+  if (baseRuntime) baseMetaParts.push(baseRuntime);
+  if (baseRating) baseMetaParts.push('TMDB ' + baseRating);
+  detailsTitle.textContent = titleText;
+  detailsOriginal.textContent = originalTitle && originalTitle !== titleText ? ('Titre original: ' + originalTitle) : '';
+  detailsMeta.textContent = baseMetaParts.join(' | ');
+  detailsPoster.src = item.poster_url || '';
+  detailsPoster.alt = titleText;
+  detailsTagline.textContent = meta.tagline ? ('"' + meta.tagline + '"') : '';
+  detailsSynopsis.textContent = meta.plot || meta.overview || 'Synopsis indisponible.';
+  detailsQuality.textContent = 'Analyse en cours...';
+  detailsAudio.textContent = 'Analyse en cours...';
+  detailsDirector.textContent = meta.director || '-';
+  detailsWriter.textContent = meta.writer || '-';
+  const studios = parseJSONList(meta.studios_json);
+  detailsStudios.textContent = studios.length ? studios.join(', ') : '-';
+  buildGenresChips(parseJSONList(meta.genres_json));
+  buildCastRow(parseJSONList(meta.cast_json));
+  buildSimilarRow(item);
+  detailsPlay.onclick = () => {
+    closeDetails();
+    play(item.id, titleText);
+  };
+  detailsAdd.onclick = () => setStatus('Ajoute a la liste (placeholder)', false);
+  detailsOverlay.classList.remove('hidden');
+  let durationSec = 0;
+  try {
+    const res = await fetch('/media/' + item.id + '/info', { headers: { Authorization: 'Bearer ' + access } });
+    if (res.ok) {
+      const info = await res.json();
+      durationSec = parseFloat(info.duration || 0) || 0;
+      detailsQuality.textContent = formatVideoQuality(info) || '-';
+      const audioLabel = formatAudioTracks(info.audio_tracks || info.audio || []);
+      detailsAudio.textContent = audioLabel || '-';
+      const runtimeLabel = formatRuntime(meta.runtime, durationSec);
+      const ratingLabel = formatRating(meta);
+      const endLabel = formatEndTime(durationSec);
+      const metaParts = [];
+      if (yearText) metaParts.push(yearText);
+      if (runtimeLabel) metaParts.push(runtimeLabel);
+      if (ratingLabel) metaParts.push('TMDB ' + ratingLabel);
+      if (endLabel) metaParts.push('Fin a ' + endLabel);
+      detailsMeta.textContent = metaParts.join(' | ');
+      return;
+    }
+  } catch (err) {
+    console.error('details info failed', err);
+  }
+  const runtimeLabel = formatRuntime(meta.runtime, durationSec);
+  const ratingLabel = formatRating(meta);
+  const endLabel = formatEndTime(durationSec);
+  const metaParts = [];
+  if (yearText) metaParts.push(yearText);
+  if (runtimeLabel) metaParts.push(runtimeLabel);
+  if (ratingLabel) metaParts.push('TMDB ' + ratingLabel);
+  if (endLabel) metaParts.push('Fin a ' + endLabel);
+  detailsMeta.textContent = metaParts.join(' | ');
+  detailsQuality.textContent = '-';
+  detailsAudio.textContent = '-';
+}
+function closeDetails() {
+  detailsOverlay.classList.add('hidden');
+}
 function createMediaCard(m) {
   const el = document.createElement('div');
   el.className = 'card';
@@ -1867,10 +2376,14 @@ function createMediaCard(m) {
   const btn = document.createElement('button');
   btn.className = 'play-btn';
   btn.innerHTML = '&#9654;';
-  btn.addEventListener('click', () => play(m.id, titleText));
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    play(m.id, titleText);
+  });
   el.appendChild(title);
   el.appendChild(year);
   el.appendChild(btn);
+  el.addEventListener('click', () => openDetails(m));
   return el;
 }
 function updateHero(item) {
@@ -1885,20 +2398,48 @@ function updateHero(item) {
   const titleText = getDisplayTitle(item);
   const yearText = getDisplayYear(item);
   const meta = item.metadata || {};
+  const ratingLabel = formatRating(meta);
   const plot = meta.plot || meta.overview || '';
   const backdrop = item.backdrop_url || item.poster_url || '';
+  const metaParts = [];
+  if (yearText) metaParts.push(yearText);
+  if (ratingLabel) metaParts.push('TMDB ' + ratingLabel);
   hero.style.setProperty('--hero-image', backdrop ? 'url(' + backdrop + ')' : 'none');
   heroTitle.textContent = titleText;
   heroDesc.textContent = plot || 'Lecture disponible en streaming direct.';
-  heroMeta.textContent = yearText ? ('Sortie ' + yearText) : 'A la une';
+  heroMeta.textContent = metaParts.length ? metaParts.join(' | ') : 'A la une';
   heroPlay.disabled = false;
   heroPlay.onclick = () => play(item.id, titleText);
+}
+function startHeroCarousel(list) {
+  if (heroTimer) {
+    clearInterval(heroTimer);
+    heroTimer = null;
+  }
+  heroItems = Array.isArray(list) ? list.slice(0, 8) : [];
+  heroIndex = 0;
+  if (heroItems.length === 0) {
+    updateHero(null);
+    return;
+  }
+  updateHero(heroItems[0]);
+  if (heroItems.length < 2) {
+    return;
+  }
+  heroTimer = setInterval(() => {
+    heroIndex = (heroIndex + 1) % heroItems.length;
+    hero.classList.add('fade');
+    setTimeout(() => {
+      updateHero(heroItems[heroIndex]);
+      hero.classList.remove('fade');
+    }, 350);
+  }, 7000);
 }
 function renderHome(list) {
   mediaGrid.innerHTML = '';
   recentRow.innerHTML = '';
   if (!Array.isArray(list) || list.length === 0) {
-    updateHero(null);
+    startHeroCarousel([]);
     setStatus('Aucun media trouve.', false);
     return;
   }
@@ -1907,7 +2448,7 @@ function renderHome(list) {
     const tb = Date.parse(b.created_at || '') || 0;
     return tb - ta;
   });
-  updateHero(sorted[0]);
+  startHeroCarousel(sorted);
   sorted.slice(0, 12).forEach(m => recentRow.appendChild(createMediaCard(m)));
   sorted.forEach(m => mediaGrid.appendChild(createMediaCard(m)));
 }
@@ -2074,6 +2615,7 @@ function logout(){
   adminPanel.classList.add('hidden');
   scanBtn.classList.add('hidden');
   avatarMenu.classList.add('hidden');
+  closeDetails();
   showHome();
   setStatus('Deconnecte', false);
 }
@@ -2211,6 +2753,7 @@ let hlsDuration = 0;
 let controlsTimer = null;
 let isFullscreen = false;
 let isSeeking = false;
+let seekPointerActive = false;
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
@@ -2371,8 +2914,7 @@ function updateRangeFill(range){
   const val = parseFloat(range.value || '0');
   const pct = max > min ? ((val - min) / (max - min)) : 0;
   const pctClamped = Math.min(Math.max(pct, 0), 1);
-  range.style.setProperty('--fill', (pctClamped * 100).toFixed(2) + '%');
-  range.style.setProperty('--fill-px', (range.getBoundingClientRect().width * pctClamped) + 'px');
+  range.style.setProperty('--fill-percent', (pctClamped * 100).toFixed(2) + '%');
 }
 function getDuration(){
   if (hlsDuration > 0) {
@@ -2385,6 +2927,18 @@ function getDuration(){
     return playerVideo.seekable.end(playerVideo.seekable.length - 1);
   }
   return 0;
+}
+function seekFromPointer(evt){
+  const duration = getDuration();
+  if (!duration) return 0;
+  const rect = seekBar.getBoundingClientRect();
+  const pct = rect.width ? (evt.clientX - rect.left) / rect.width : 0;
+  const clamped = Math.min(Math.max(pct, 0), 1);
+  const value = duration * clamped;
+  seekBar.value = value.toFixed(2);
+  updateRangeFill(seekBar);
+  timeLabel.textContent = formatTime(value) + ' / ' + formatTime(duration);
+  return value;
 }
   playerVideo.addEventListener('loadedmetadata', () => {
     const duration = getDuration();
@@ -2419,9 +2973,37 @@ seekBar.addEventListener('change', () => {
   playerVideo.currentTime = global;
   isSeeking = false;
 });
+seekBar.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  seekPointerActive = true;
+  isSeeking = true;
+  seekBar.setPointerCapture(e.pointerId);
+  seekFromPointer(e);
+});
+seekBar.addEventListener('pointermove', (e) => {
+  if (!seekPointerActive) return;
+  seekFromPointer(e);
+});
+seekBar.addEventListener('pointerup', (e) => {
+  if (!seekPointerActive) return;
+  const value = seekFromPointer(e);
+  playerVideo.currentTime = value;
+  if (seekBar.hasPointerCapture(e.pointerId)) {
+    seekBar.releasePointerCapture(e.pointerId);
+  }
+  seekPointerActive = false;
+  isSeeking = false;
+});
+seekBar.addEventListener('pointercancel', (e) => {
+  if (seekBar.hasPointerCapture(e.pointerId)) {
+    seekBar.releasePointerCapture(e.pointerId);
+  }
+  seekPointerActive = false;
+  isSeeking = false;
+});
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
-  if (v > 0.98) {
+  if (!isFinite(v)) {
     v = 1;
     volumeBar.value = '1';
   }
@@ -2457,8 +3039,19 @@ document.getElementById('playerClose').addEventListener('click', closePlayer);
 overlay.addEventListener('click', (e) => {
   if (e.target === overlay) closePlayer();
 });
+if (detailsClose) {
+  detailsClose.addEventListener('click', closeDetails);
+}
+if (detailsOverlay) {
+  detailsOverlay.addEventListener('click', (e) => {
+    if (e.target === detailsOverlay) closeDetails();
+  });
+}
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && overlay.style.display === 'flex') closePlayer();
+  if (e.key === 'Escape') {
+    if (overlay.style.display === 'flex') closePlayer();
+    if (!detailsOverlay.classList.contains('hidden')) closeDetails();
+  }
 });
 if (searchInput) {
   searchInput.addEventListener('input', (e) => {

@@ -339,11 +339,11 @@ func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePa
 		}
 		return nil
 	}
-	meta, poster, err := s.fetchTmdbMetadata(updatedTitle, updatedYear, imdbID)
+	meta, poster, backdrop, err := s.fetchTmdbMetadata(updatedTitle, updatedYear, imdbID)
 	if err != nil {
 		return nil
 	}
-	if len(meta) == 0 && poster == "" {
+	if len(meta) == 0 && poster == "" && backdrop == "" {
 		return nil
 	}
 	tmdbTitle := strings.TrimSpace(meta["title"])
@@ -365,9 +365,9 @@ func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePa
 			return err
 		}
 	}
-	if poster != "" {
-		return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=?, poster_url=? WHERE id=?`, s.keyspace),
-			meta, poster, mediaID).WithContext(ctx).Exec()
+	if poster != "" || backdrop != "" {
+		return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=?, poster_url=?, backdrop_url=? WHERE id=?`, s.keyspace),
+			meta, poster, backdrop, mediaID).WithContext(ctx).Exec()
 	}
 	return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=? WHERE id=?`, s.keyspace),
 		meta, mediaID).WithContext(ctx).Exec()
@@ -417,19 +417,43 @@ func extractTag(text, tag string) string {
 	return text[start : start+end]
 }
 
-func (s *Service) fetchTmdbMetadata(title string, year int, imdbID string) (map[string]string, string, error) {
+func (s *Service) fetchTmdbMetadata(title string, year int, imdbID string) (map[string]string, string, string, error) {
 	if s.tmdbKey == "" {
-		return nil, "", fmt.Errorf("tmdb key missing")
+		return nil, "", "", fmt.Errorf("tmdb key missing")
 	}
+	var tmdbID int
 	if imdbID != "" {
-		if meta, poster, err := s.tmdbFindByImdb(imdbID); err == nil {
-			return meta, poster, nil
+		id, err := s.tmdbIDFromImdb(imdbID)
+		if err == nil {
+			tmdbID = id
 		}
 	}
-	return s.tmdbSearchMovie(title, year)
+	if tmdbID == 0 {
+		id, err := s.tmdbIDFromSearch(title, year)
+		if err == nil {
+			tmdbID = id
+		}
+	}
+	if tmdbID == 0 {
+		return nil, "", "", fmt.Errorf("tmdb not found")
+	}
+	meta, poster, backdrop, err := s.tmdbMovieDetails(tmdbID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	credits, err := s.tmdbMovieCredits(tmdbID)
+	if err == nil {
+		for k, v := range credits {
+			meta[k] = v
+		}
+	}
+	if imdbID != "" && meta["imdb_id"] == "" {
+		meta["imdb_id"] = imdbID
+	}
+	return meta, poster, backdrop, nil
 }
 
-func (s *Service) tmdbFindByImdb(imdbID string) (map[string]string, string, error) {
+func (s *Service) tmdbIDFromImdb(imdbID string) (int, error) {
 	endpoint := "https://api.themoviedb.org/3/find/" + url.PathEscape(imdbID)
 	params := url.Values{}
 	params.Set("api_key", s.tmdbKey)
@@ -438,36 +462,23 @@ func (s *Service) tmdbFindByImdb(imdbID string) (map[string]string, string, erro
 	reqURL := endpoint + "?" + params.Encode()
 	body, err := getJSON(reqURL)
 	if err != nil {
-		return nil, "", err
+		return 0, err
 	}
 	var out struct {
 		MovieResults []struct {
-			ID          int    `json:"id"`
-			Title       string `json:"title"`
-			ReleaseDate string `json:"release_date"`
-			Overview    string `json:"overview"`
-			PosterPath  string `json:"poster_path"`
+			ID int `json:"id"`
 		} `json:"movie_results"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, "", err
+		return 0, err
 	}
 	if len(out.MovieResults) == 0 {
-		return nil, "", fmt.Errorf("tmdb not found")
+		return 0, fmt.Errorf("tmdb not found")
 	}
-	m := out.MovieResults[0]
-	meta := map[string]string{
-		"title":     m.Title,
-		"year":      yearFromDate(m.ReleaseDate),
-		"plot":      m.Overview,
-		"tmdb_id":   fmt.Sprintf("%d", m.ID),
-		"imdb_id":   imdbID,
-		"type":      "movie",
-	}
-	return meta, tmdbPosterURL(m.PosterPath), nil
+	return out.MovieResults[0].ID, nil
 }
 
-func (s *Service) tmdbSearchMovie(title string, year int) (map[string]string, string, error) {
+func (s *Service) tmdbIDFromSearch(title string, year int) (int, error) {
 	endpoint := "https://api.themoviedb.org/3/search/movie"
 	params := url.Values{}
 	params.Set("api_key", s.tmdbKey)
@@ -479,32 +490,144 @@ func (s *Service) tmdbSearchMovie(title string, year int) (map[string]string, st
 	reqURL := endpoint + "?" + params.Encode()
 	body, err := getJSON(reqURL)
 	if err != nil {
-		return nil, "", err
+		return 0, err
 	}
 	var out struct {
 		Results []struct {
-			ID          int    `json:"id"`
-			Title       string `json:"title"`
-			ReleaseDate string `json:"release_date"`
-			Overview    string `json:"overview"`
-			PosterPath  string `json:"poster_path"`
+			ID int `json:"id"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, "", err
+		return 0, err
 	}
 	if len(out.Results) == 0 {
-		return nil, "", fmt.Errorf("tmdb not found")
+		return 0, fmt.Errorf("tmdb not found")
 	}
-	m := out.Results[0]
+	return out.Results[0].ID, nil
+}
+
+func (s *Service) tmdbMovieDetails(id int) (map[string]string, string, string, error) {
+	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d", id)
+	params := url.Values{}
+	params.Set("api_key", s.tmdbKey)
+	params.Set("language", "fr-FR")
+	reqURL := endpoint + "?" + params.Encode()
+	body, err := getJSON(reqURL)
+	if err != nil {
+		return nil, "", "", err
+	}
+	var out struct {
+		ID               int     `json:"id"`
+		Title            string  `json:"title"`
+		OriginalTitle    string  `json:"original_title"`
+		ReleaseDate      string  `json:"release_date"`
+		Overview         string  `json:"overview"`
+		Tagline          string  `json:"tagline"`
+		Runtime          int     `json:"runtime"`
+		VoteAverage      float64 `json:"vote_average"`
+		PosterPath       string  `json:"poster_path"`
+		BackdropPath     string  `json:"backdrop_path"`
+		ImdbID           string  `json:"imdb_id"`
+		Genres           []struct {
+			Name string `json:"name"`
+		} `json:"genres"`
+		ProductionCompanies []struct {
+			Name string `json:"name"`
+		} `json:"production_companies"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, "", "", err
+	}
+	genres := make([]string, 0, len(out.Genres))
+	for _, g := range out.Genres {
+		if strings.TrimSpace(g.Name) != "" {
+			genres = append(genres, g.Name)
+		}
+	}
+	studios := make([]string, 0, len(out.ProductionCompanies))
+	for _, s := range out.ProductionCompanies {
+		if strings.TrimSpace(s.Name) != "" {
+			studios = append(studios, s.Name)
+		}
+	}
+	genresJSON, _ := json.Marshal(genres)
+	studiosJSON, _ := json.Marshal(studios)
 	meta := map[string]string{
-		"title":   m.Title,
-		"year":    yearFromDate(m.ReleaseDate),
-		"plot":    m.Overview,
-		"tmdb_id": fmt.Sprintf("%d", m.ID),
-		"type":    "movie",
+		"title":          out.Title,
+		"original_title": out.OriginalTitle,
+		"year":           yearFromDate(out.ReleaseDate),
+		"plot":           out.Overview,
+		"tagline":        out.Tagline,
+		"runtime":        fmt.Sprintf("%d", out.Runtime),
+		"rating":         fmt.Sprintf("%.1f", out.VoteAverage),
+		"tmdb_id":        fmt.Sprintf("%d", out.ID),
+		"imdb_id":        out.ImdbID,
+		"genres_json":    string(genresJSON),
+		"studios_json":   string(studiosJSON),
+		"type":           "movie",
 	}
-	return meta, tmdbPosterURL(m.PosterPath), nil
+	return meta, tmdbPosterURL(out.PosterPath), tmdbBackdropURL(out.BackdropPath), nil
+}
+
+func (s *Service) tmdbMovieCredits(id int) (map[string]string, error) {
+	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/credits", id)
+	params := url.Values{}
+	params.Set("api_key", s.tmdbKey)
+	params.Set("language", "fr-FR")
+	reqURL := endpoint + "?" + params.Encode()
+	body, err := getJSON(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Cast []struct {
+			Name      string `json:"name"`
+			Character string `json:"character"`
+		} `json:"cast"`
+		Crew []struct {
+			Name string `json:"name"`
+			Job  string `json:"job"`
+		} `json:"crew"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	directorSet := map[string]bool{}
+	writerSet := map[string]bool{}
+	for _, c := range out.Crew {
+		job := strings.ToLower(strings.TrimSpace(c.Job))
+		if job == "director" {
+			directorSet[c.Name] = true
+		}
+		if job == "writer" || job == "screenplay" {
+			writerSet[c.Name] = true
+		}
+	}
+	directors := make([]string, 0, len(directorSet))
+	for name := range directorSet {
+		directors = append(directors, name)
+	}
+	writers := make([]string, 0, len(writerSet))
+	for name := range writerSet {
+		writers = append(writers, name)
+	}
+	castList := make([]map[string]string, 0, len(out.Cast))
+	for i, c := range out.Cast {
+		if i >= 20 {
+			break
+		}
+		castList = append(castList, map[string]string{
+			"name": c.Name,
+			"character": c.Character,
+		})
+	}
+	castJSON, _ := json.Marshal(castList)
+	meta := map[string]string{
+		"director":  strings.Join(directors, ", "),
+		"writer":    strings.Join(writers, ", "),
+		"cast_json": string(castJSON),
+	}
+	return meta, nil
 }
 
 func (s *Service) DebugTmdb(title string, year int, imdbID string) (map[string]interface{}, error) {
@@ -570,6 +693,13 @@ func tmdbPosterURL(path string) string {
 		return ""
 	}
 	return "https://image.tmdb.org/t/p/w500" + path
+}
+
+func tmdbBackdropURL(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	return "https://image.tmdb.org/t/p/w1280" + path
 }
 
 func yearFromDate(date string) string {
