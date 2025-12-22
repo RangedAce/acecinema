@@ -1186,8 +1186,32 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       padding: 6px 10px;
     }
     .seek-bar { flex: 1; }
-    .volume-bar { width: 90px; }
+    .volume-bar { width: 110px; }
     .time-label { min-width: 90px; color: #cfcfcf; }
+    input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      border-radius: 999px;
+      background: #2f2f2f;
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #d0cfcf;
+      border: 1px solid #3a3a3a;
+    }
+    input[type=range]::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #d0cfcf;
+      border: 1px solid #3a3a3a;
+    }
     .player-controls select {
       background: #1f1f1f;
       color: #fff;
@@ -1587,6 +1611,8 @@ let currentAssetPath = '';
 let currentMediaId = '';
 let currentAudioIndex = -1;
 let hlsDuration = 0;
+let segmentDurations = [];
+let segmentOffsets = [];
 let controlsTimer = null;
 let isFullscreen = false;
 function openPlayer(titleText){
@@ -1594,6 +1620,7 @@ function openPlayer(titleText){
   playerVideo.muted = false;
   playerVideo.volume = 1;
   volumeBar.value = '1';
+  updateRangeFill(volumeBar);
   overlay.style.display = 'flex';
   showControls();
 }
@@ -1662,6 +1689,8 @@ async function startHls(path, audioIndex){
       const d = parseFloat(data.duration);
       if (!isNaN(d)) {
         hlsDuration = d;
+        seekBar.max = String(Math.floor(d));
+        updateRangeFill(seekBar);
       }
     }
   if (hls) {
@@ -1674,15 +1703,15 @@ async function startHls(path, audioIndex){
       console.error('hls error', data);
     });
     hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
-      if (data && data.details && data.details.totalduration) {
-        if (data.details.totalduration > hlsDuration) {
-          hlsDuration = data.details.totalduration;
-        }
+      if (data && data.details && data.details.fragments) {
+        segmentDurations = data.details.fragments.map(f => f.duration || 0);
+        segmentOffsets = buildSectionOffsets(segmentDurations);
       }
     });
     hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-      if (data && data.levels && data.levels.length > 0 && data.levels[0].details && data.levels[0].details.totalduration) {
-        hlsDuration = Math.max(hlsDuration, data.levels[0].details.totalduration);
+      if (data && data.levels && data.levels.length > 0 && data.levels[0].details && data.levels[0].details.fragments) {
+        segmentDurations = data.levels[0].details.fragments.map(f => f.duration || 0);
+        segmentOffsets = buildSectionOffsets(segmentDurations);
       }
     });
     hls.loadSource(data.url);
@@ -1704,6 +1733,36 @@ function formatTime(seconds){
   const s = Math.floor(seconds % 60);
   const m = Math.floor(seconds / 60);
   return m + ':' + (s < 10 ? '0' + s : s);
+}
+function updateRangeFill(range){
+  const min = parseFloat(range.min || '0');
+  const max = parseFloat(range.max || '100');
+  const val = parseFloat(range.value || '0');
+  const pct = max > min ? ((val - min) / (max - min)) * 100 : 0;
+  range.style.background = 'linear-gradient(90deg, #7a7d7d 0%, #7a7d7d ' + pct + '%, #2f2f2f ' + pct + '%, #2f2f2f 100%)';
+}
+function buildSectionOffsets(durations){
+  const offsets = [];
+  let acc = 0;
+  for (let i = 0; i < durations.length; i++) {
+    offsets.push(acc);
+    acc += durations[i];
+  }
+  return offsets;
+}
+function globalToLocal(t){
+  for (let i = 0; i < segmentOffsets.length; i++) {
+    const start = segmentOffsets[i];
+    const end = (i + 1 < segmentOffsets.length) ? segmentOffsets[i + 1] : (start + (segmentDurations[i] || 0));
+    if (t >= start && t < end) {
+      return { index: i, localTime: t - start };
+    }
+  }
+  return { index: 0, localTime: t };
+}
+function localToGlobal(i, tLocal){
+  const start = segmentOffsets[i] || 0;
+  return start + tLocal;
 }
 function getDuration(){
   if (isFinite(playerVideo.duration) && playerVideo.duration > 0) {
@@ -1732,18 +1791,23 @@ function getSeekableRange(){
 playerVideo.addEventListener('timeupdate', () => {
   const duration = getDuration();
   if (!duration) { return; }
-  const range = getSeekableRange();
-  const pos = Math.min(Math.max(playerVideo.currentTime, range.start), range.end);
-  const pct = ((pos - range.start) / (range.end - range.start)) * 1000;
-  seekBar.value = String(Math.floor(pct));
+  const pos = Math.min(Math.max(playerVideo.currentTime, 0), duration);
+  seekBar.max = String(Math.floor(duration));
+  seekBar.value = String(Math.floor(pos));
+  updateRangeFill(seekBar);
   timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
 });
 seekBar.addEventListener('input', () => {
   const duration = getDuration();
   if (!duration) { return; }
-  const range = getSeekableRange();
-  const pct = parseInt(seekBar.value, 10) / 1000;
-  playerVideo.currentTime = range.start + (range.end - range.start) * pct;
+  updateRangeFill(seekBar);
+});
+seekBar.addEventListener('change', () => {
+  const duration = getDuration();
+  if (!duration) { return; }
+  const t = parseFloat(seekBar.value);
+  const global = Math.min(Math.max(t, 0), duration);
+  playerVideo.currentTime = global;
 });
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
@@ -1752,6 +1816,7 @@ volumeBar.addEventListener('input', () => {
     volumeBar.value = '1';
   }
   playerVideo.volume = v;
+  updateRangeFill(volumeBar);
 });
 playToggle.addEventListener('click', () => {
   if (playerVideo.paused) { playerVideo.play(); } else { playerVideo.pause(); }
