@@ -1321,7 +1321,7 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		"-keyint_min", "48",
 		"-sc_threshold", "0",
 		"-max_muxing_queue_size", "1024",
-	}
+	)
 	if audioCopy {
 		args = append(args, "-c:a", "copy")
 	} else {
