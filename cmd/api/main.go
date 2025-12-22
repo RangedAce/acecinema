@@ -2820,6 +2820,7 @@ let controlsTimer = null;
 let isFullscreen = false;
 let isSeeking = false;
 let seekPointerActive = false;
+let pendingSeekTime = null;
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
@@ -3012,6 +3013,11 @@ function seekFromPointer(evt){
     seekBar.max = duration.toFixed(2);
     updateRangeFill(seekBar);
     timeLabel.textContent = formatTime(playerVideo.currentTime) + ' / ' + formatTime(duration);
+    if (pendingSeekTime !== null) {
+      const next = Math.min(Math.max(pendingSeekTime, 0), duration);
+      playerVideo.currentTime = next;
+      pendingSeekTime = null;
+    }
   });
   playerVideo.addEventListener('timeupdate', () => {
     if (isSeeking) return;
@@ -3044,7 +3050,13 @@ seekBar.addEventListener('pointerdown', (e) => {
   seekPointerActive = true;
   isSeeking = true;
   seekBar.setPointerCapture(e.pointerId);
-  seekFromPointer(e);
+  const value = seekFromPointer(e);
+  const duration = getDuration();
+  if (duration) {
+    playerVideo.currentTime = value;
+  } else {
+    pendingSeekTime = value;
+  }
 });
 seekBar.addEventListener('pointermove', (e) => {
   if (!seekPointerActive) return;
@@ -3053,7 +3065,12 @@ seekBar.addEventListener('pointermove', (e) => {
 seekBar.addEventListener('pointerup', (e) => {
   if (!seekPointerActive) return;
   const value = seekFromPointer(e);
-  playerVideo.currentTime = value;
+  const duration = getDuration();
+  if (duration) {
+    playerVideo.currentTime = value;
+  } else {
+    pendingSeekTime = value;
+  }
   if (seekBar.hasPointerCapture(e.pointerId)) {
     seekBar.releasePointerCapture(e.pointerId);
   }
@@ -3066,6 +3083,15 @@ seekBar.addEventListener('pointercancel', (e) => {
   }
   seekPointerActive = false;
   isSeeking = false;
+});
+seekBar.addEventListener('click', (e) => {
+  const value = seekFromPointer(e);
+  const duration = getDuration();
+  if (duration) {
+    playerVideo.currentTime = value;
+  } else {
+    pendingSeekTime = value;
+  }
 });
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
