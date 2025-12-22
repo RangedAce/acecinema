@@ -2003,6 +2003,12 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       max-height: 90vh;
       backdrop-filter: blur(20px);
     }
+    .player-shell:not(.controls-visible) {
+      cursor: none;
+    }
+    .player-shell:not(.controls-visible) * {
+      cursor: none;
+    }
     .player-shell.controls-visible .player-bar,
     .player-shell.controls-visible .player-controls {
       opacity: 1;
@@ -2061,6 +2067,12 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       transition: opacity 0.2s ease;
       z-index: 2;
     }
+    .seek-wrap {
+      position: relative;
+      flex: 1;
+      display: flex;
+      align-items: center;
+    }
     .player-ctrl {
       background: rgba(99, 102, 241, 0.2);
       color: #fff;
@@ -2074,9 +2086,27 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .player-close:active {
       transform: translateY(1px);
     }
-    .seek-bar { flex: 1; }
+    .seek-bar { width: 100%; }
     .volume-bar { width: 110px; }
     .time-label { min-width: 120px; color: #cfcfcf; }
+    .seek-preview {
+      position: absolute;
+      bottom: 18px;
+      transform: translateX(-50%);
+      background: rgba(10, 14, 39, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text-main);
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.12s ease;
+      white-space: nowrap;
+    }
+    .seek-preview.visible {
+      opacity: 1;
+    }
     input[type=range] {
       -webkit-appearance: none;
       appearance: none;
@@ -2355,7 +2385,10 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       <div class="player-controls">
         <button id="playToggle" class="player-ctrl">&#9654;</button>
         <div id="timeLabel" class="time-label">0:00 / 0:00</div>
-        <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" step="0.1" value="0"/>
+        <div class="seek-wrap">
+          <div id="seekPreview" class="seek-preview"></div>
+          <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" step="0.1" value="0"/>
+        </div>
         <input id="volumeBar" class="volume-bar" type="range" min="0" max="1" step="0.01" value="1"/>
         <select id="audioSelect">
           <option value="-1">Auto</option>
@@ -3115,6 +3148,7 @@ const audioSelect = document.getElementById('audioSelect');
 const audioHint = document.getElementById('audioHint');
 const playToggle = document.getElementById('playToggle');
 const seekBar = document.getElementById('seekBar');
+const seekPreview = document.getElementById('seekPreview');
 const volumeBar = document.getElementById('volumeBar');
 const timeLabel = document.getElementById('timeLabel');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
@@ -3133,12 +3167,12 @@ let isSeeking = false;
 let seekPointerActive = false;
 let pendingSeekTime = null;
 let hlsBaseOffset = 0;
-let seekRaf = null;
-let seekRafValue = null;
 let lastRestartAt = 0;
 let restartTimer = null;
 let queuedRestartTarget = null;
 const RESTART_COOLDOWN_MS = 1200;
+let seekHoldActive = false;
+let seekHoldTarget = 0;
 function debugSeekLog() {
   if (!DEBUG_SEEK) return;
   console.log.apply(console, arguments);
@@ -3178,6 +3212,23 @@ function logTimelineState(label) {
     });
   }
 }
+function setSeekHold(target) {
+  seekHoldActive = true;
+  seekHoldTarget = target;
+}
+function releaseSeekHold() {
+  seekHoldActive = false;
+}
+function showSeekPreview(value, pct) {
+  if (!seekPreview) return;
+  seekPreview.textContent = formatTime(value);
+  seekPreview.style.left = (pct * 100).toFixed(2) + '%';
+  seekPreview.classList.add('visible');
+}
+function hideSeekPreview() {
+  if (!seekPreview) return;
+  seekPreview.classList.remove('visible');
+}
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
@@ -3208,6 +3259,8 @@ function closePlayer(){
   pendingSeekTime = null;
   lastRestartAt = 0;
   queuedRestartTarget = null;
+  seekHoldActive = false;
+  seekHoldTarget = 0;
   if (restartTimer) {
     clearTimeout(restartTimer);
     restartTimer = null;
@@ -3310,6 +3363,7 @@ async function startDirect(url, startAt){
   }
   playerVideo.src = url;
   playerVideo.addEventListener('canplay', () => {
+    releaseSeekHold();
     playerVideo.play().catch(err => console.error('play failed', err));
   }, { once: true });
   logTimelineState('start');
@@ -3328,6 +3382,7 @@ async function startTranscode(url, sessionId, startAt, status){
     const ahead = end - playerVideo.currentTime;
     if (ahead >= 4) {
       didAutoPlay = true;
+      releaseSeekHold();
       playerVideo.play().catch(err => console.error('play failed', err));
     }
   };
@@ -3401,11 +3456,17 @@ async function startTranscode(url, sessionId, startAt, status){
     });
     hls.loadSource(url);
     hls.attachMedia(playerVideo);
-    playerVideo.addEventListener('canplay', tryAutoPlay);
+    playerVideo.addEventListener('canplay', () => {
+      releaseSeekHold();
+      tryAutoPlay();
+    }, { once: true });
     logTimelineState('start');
   } else {
     playerVideo.src = url;
-    playerVideo.addEventListener('canplay', tryAutoPlay);
+    playerVideo.addEventListener('canplay', () => {
+      releaseSeekHold();
+      tryAutoPlay();
+    }, { once: true });
     logTimelineState('start');
   }
 }
@@ -3514,6 +3575,7 @@ function canSeekLocally(target) {
 async function handleSeekTarget(target, allowRestart) {
   if (!isFinite(target)) return;
   if (currentStreamMode === 'direct') {
+    releaseSeekHold();
     requestSeek(target);
     return;
   }
@@ -3521,6 +3583,7 @@ async function handleSeekTarget(target, allowRestart) {
     if (DEBUG_SEEK) {
       debugSeekLog('[seek] local', { target: target, offset: hlsBaseOffset });
     }
+    releaseSeekHold();
     requestSeek(target);
     return;
   }
@@ -3529,6 +3592,7 @@ async function handleSeekTarget(target, allowRestart) {
       debugSeekLog('[seek] restart', { target: target, offset: hlsBaseOffset });
     }
     setStatus('Repositionnement...', false);
+    setSeekHold(target);
     scheduleRestart(target);
     return;
   }
@@ -3555,7 +3619,7 @@ function scheduleRestart(target) {
     }
   }, Math.max(RESTART_COOLDOWN_MS - elapsed, 0));
 }
-function seekFromPointer(evt){
+function seekFromPointer(evt, preview){
   const duration = getDuration();
   if (!duration) return 0;
   const rect = seekBar.getBoundingClientRect();
@@ -3565,6 +3629,9 @@ function seekFromPointer(evt){
   seekBar.value = value.toFixed(2);
   updateRangeFill(seekBar);
   timeLabel.textContent = formatTime(value) + ' / ' + formatTime(duration);
+  if (preview) {
+    showSeekPreview(value, clamped);
+  }
   return value;
 }
   playerVideo.addEventListener('loadedmetadata', () => {
@@ -3578,6 +3645,16 @@ function seekFromPointer(evt){
     }
   });
   playerVideo.addEventListener('timeupdate', () => {
+    if (seekHoldActive) {
+      const duration = getDuration();
+      if (!duration) { return; }
+      const pos = Math.min(Math.max(seekHoldTarget, 0), duration);
+      seekBar.max = duration.toFixed(2);
+      seekBar.value = pos.toFixed(2);
+      updateRangeFill(seekBar);
+      timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
+      return;
+    }
     if (isSeeking) return;
     const duration = getDuration();
     if (!duration) { return; }
@@ -3607,6 +3684,7 @@ seekBar.addEventListener('input', () => {
 seekBar.addEventListener('change', () => {
   const t = parseFloat(seekBar.value);
   logSeekEvent('change', null);
+  hideSeekPreview();
   handleSeekTarget(t, true);
   isSeeking = false;
 });
@@ -3616,33 +3694,24 @@ seekBar.addEventListener('pointerdown', (e) => {
   isSeeking = true;
   seekBar.setPointerCapture(e.pointerId);
   logSeekEvent('pointerdown', e);
-  const value = seekFromPointer(e);
-  handleSeekTarget(value, false);
+  seekFromPointer(e, true);
 });
 seekBar.addEventListener('pointermove', (e) => {
   if (!seekPointerActive) return;
   logSeekEvent('pointermove', e);
-  seekRafValue = seekFromPointer(e);
-  if (seekRaf) return;
-  seekRaf = requestAnimationFrame(() => {
-    seekRaf = null;
-    if (seekRafValue !== null) {
-      if (canSeekLocally(seekRafValue)) {
-        requestSeek(seekRafValue);
-      }
-    }
-  });
+  seekFromPointer(e, true);
 });
 seekBar.addEventListener('pointerup', (e) => {
   if (!seekPointerActive) return;
   logSeekEvent('pointerup', e);
-  const value = seekFromPointer(e);
+  const value = seekFromPointer(e, true);
   handleSeekTarget(value, true);
   if (seekBar.hasPointerCapture(e.pointerId)) {
     seekBar.releasePointerCapture(e.pointerId);
   }
   seekPointerActive = false;
   isSeeking = false;
+  setTimeout(hideSeekPreview, 200);
 });
 seekBar.addEventListener('pointercancel', (e) => {
   if (seekBar.hasPointerCapture(e.pointerId)) {
@@ -3650,12 +3719,14 @@ seekBar.addEventListener('pointercancel', (e) => {
   }
   seekPointerActive = false;
   isSeeking = false;
+  hideSeekPreview();
 });
 seekBar.addEventListener('click', (e) => {
   logSeekEvent('click', e);
-  const value = seekFromPointer(e);
+  const value = seekFromPointer(e, true);
   handleSeekTarget(value, true);
   logTimelineState('click');
+  setTimeout(hideSeekPreview, 500);
 });
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
