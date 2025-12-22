@@ -47,6 +47,7 @@ type hlsSession struct {
 	path       string
 	audioIndex int
 	dir        string
+	logPath    string
 	cmd        *exec.Cmd
 	lastAccess time.Time
 }
@@ -157,6 +158,7 @@ func main() {
 		r.Post("/libraries", handleCreateLibrary(session, cfg.Keyspace))
 		r.Delete("/libraries/{id}", handleDeleteLibrary(session, cfg.Keyspace))
 		r.Get("/debug/tmdb", handleDebugTmdb(mediaSvc))
+		r.Get("/debug/hls/{session}", handleDebugHLS(hlsMgr))
 		r.Post("/scan", func(w http.ResponseWriter, r *http.Request) {
 			added, err := scanWithLibraries(r.Context(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot, true)
 			if err != nil {
@@ -542,13 +544,14 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			return
 		}
 		indexPath := filepath.Join(sess.dir, "index.m3u8")
-		waitForFile(indexPath, 12*time.Second)
+		waitForFile(indexPath, 25*time.Second)
 		if _, err := os.Stat(indexPath); err != nil {
-			errorJSON(w, http.StatusInternalServerError, "hls not ready")
+			errorJSON(w, http.StatusInternalServerError, "hls not ready (session "+sess.id+")")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
-			"url": "/hls/" + sess.id + "/index.m3u8",
+			"url":     "/hls/" + sess.id + "/index.m3u8",
+			"session": sess.id,
 		})
 	}
 }
@@ -614,6 +617,29 @@ func handleAudioTracks(svc *media.Service, session *gocql.Session, keyspace, med
 			return
 		}
 		writeJSON(w, http.StatusOK, tracks)
+	}
+}
+
+func handleDebugHLS(mgr *hlsManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionID := chi.URLParam(r, "session")
+		if sessionID == "" {
+			errorJSON(w, http.StatusBadRequest, "session required")
+			return
+		}
+		sess := mgr.Get(sessionID)
+		if sess == nil {
+			errorJSON(w, http.StatusNotFound, "session not found")
+			return
+		}
+		data, err := os.ReadFile(sess.logPath)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"log": string(data),
+		})
 	}
 }
 
@@ -766,6 +792,7 @@ func (m *hlsManager) Create(path string, audioIndex int) (*hlsSession, error) {
 		path:       path,
 		audioIndex: audioIndex,
 		dir:        dir,
+		logPath:    filepath.Join(dir, "ffmpeg.log"),
 		lastAccess: time.Now(),
 	}
 	m.mu.Lock()
@@ -830,8 +857,14 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		filepath.Join(sess.dir, "index.m3u8"),
 	}
 	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	logFile, err := os.OpenFile(sess.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	sess.cmd = cmd
 	if err := cmd.Run(); err != nil {
 		log.Printf("hls ffmpeg exit: %v", err)
