@@ -1022,89 +1022,183 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   <title>AceCinema</title>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.12"></script>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Poppins:wght@600;700&display=swap');
     :root {
-      --snow: #fffbfe;
-      --grey: #7a7d7d;
-      --dust-grey: #d0cfcf;
-      --charcoal: #565254;
-      --white: #ffffff;
+      --bg-primary: #0A0E27;
+      --bg-secondary: #161B33;
+      --accent: #6366F1;
+      --accent-2: #EC4899;
+      --text: #F3F4F6;
+      --text-muted: #9CA3AF;
+      --success: #10B981;
+      --error: #EF4444;
+      --radius-card: 12px;
+      --radius-btn: 6px;
+      --glass: rgba(22, 27, 51, 0.8);
+      --shadow-accent: 0 10px 40px rgba(99, 102, 241, 0.3);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      color: var(--charcoal);
-      background: radial-gradient(1200px 600px at 20% 10%, var(--snow), var(--white)) fixed;
-      font-family: "Garamond", "Palatino Linotype", "Book Antiqua", serif;
-      font-size: 16.5px;
+      color: var(--text);
+      background: linear-gradient(135deg, #0A0E27 0%, #161B33 100%);
+      font-family: "Inter", "Noto Sans", system-ui, sans-serif;
+      font-size: 15px;
     }
-    .page {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 28px 20px 80px;
+    h1, h2, .logo, .brand {
+      font-family: "Poppins", "Inter", sans-serif;
     }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 34px;
-      letter-spacing: 0.5px;
+    code, .mono {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
     }
-    .subtitle {
-      color: var(--grey);
-      margin-bottom: 18px;
+    input, button {
+      font-family: inherit;
     }
-    .panel {
-      background: var(--white);
-      border: 1px solid var(--dust-grey);
-      border-radius: 14px;
-      padding: 16px;
-      box-shadow: 0 10px 30px rgba(86, 82, 84, 0.08);
-    }
-    .hidden { display: none; }
-    .topbar {
+    .hidden { display: none !important; }
+    .app {
       display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
+      min-height: 100vh;
+    }
+    .sidebar {
+      width: 240px;
+      background: rgba(22, 27, 51, 0.95);
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 24px 18px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      transition: transform 0.2s ease;
+    }
+    .brand {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .nav {
+      display: flex;
+      flex-direction: column;
       gap: 10px;
     }
-    .logo {
-      font-size: 34px;
-      letter-spacing: 0.5px;
-      margin: 0;
+    .nav button {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      padding: 10px 12px;
+      border-radius: 10px;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
     }
-    .avatar-wrap { position: relative; }
+    .nav button svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+    }
+    .nav button:hover,
+    .nav button.active {
+      color: var(--text);
+      background: rgba(99, 102, 241, 0.16);
+      border-color: rgba(99, 102, 241, 0.35);
+      box-shadow: 0 10px 30px rgba(99, 102, 241, 0.15);
+    }
+    .sidebar-footer {
+      margin-top: auto;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .main {
+      flex: 1;
+      padding: 24px 28px 32px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+    }
+    .sidebar-toggle {
+      display: none;
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(22, 27, 51, 0.7);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .search {
+      flex: 1;
+      max-width: 520px;
+    }
+    .search input {
+      width: 100%;
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: var(--bg-secondary);
+      color: var(--text);
+      transition: border 0.2s ease, box-shadow 0.2s ease;
+    }
+    .search input:focus {
+      border-color: rgba(99, 102, 241, 0.6);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+      outline: none;
+    }
+    .avatar-wrap {
+      position: relative;
+    }
     .avatar {
       width: 40px;
       height: 40px;
       border-radius: 50%;
-      border: 1px solid var(--dust-grey);
-      background: var(--charcoal);
-      color: var(--white);
-      font-weight: bold;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: var(--accent);
+      color: var(--text);
+      cursor: pointer;
+      transition: transform 0.2s ease;
     }
+    .avatar:hover { transform: scale(1.03); }
     .menu {
       position: absolute;
       right: 0;
       top: 48px;
-      background: var(--white);
-      border: 1px solid var(--dust-grey);
-      border-radius: 10px;
-      min-width: 160px;
-      box-shadow: 0 10px 24px rgba(86, 82, 84, 0.18);
-      padding: 6px;
-      z-index: 50;
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 8px;
+      min-width: 180px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10;
+      box-shadow: 0 20px 50px rgba(3, 6, 20, 0.6);
     }
     .menu button {
-      width: 100%;
-      text-align: left;
-      background: var(--white);
-      color: var(--charcoal);
+      background: transparent;
       border: none;
-      padding: 10px;
+      text-align: left;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text);
+      transition: all 0.2s ease;
     }
     .menu button:hover {
-      background: var(--snow);
+      background: rgba(99, 102, 241, 0.2);
     }
-    .view { margin-top: 12px; }
     .avatar-grid {
       display: flex;
       gap: 10px;
@@ -1115,72 +1209,178 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       width: 34px;
       height: 34px;
       border-radius: 50%;
-      border: 1px solid var(--dust-grey);
+      border: 1px solid rgba(255, 255, 255, 0.2);
       cursor: pointer;
     }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
+    .panel {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 16px;
+      background: rgba(22, 27, 51, 0.65);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 20px 50px rgba(10, 14, 39, 0.4);
     }
-    input, button {
-      border-radius: 10px;
+    .auth-panel {
+      max-width: 520px;
+      margin: 80px auto 0;
+    }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    input {
       padding: 10px 12px;
-      border: 1px solid var(--dust-grey);
-      font-size: 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--bg-secondary);
+      color: var(--text);
+      min-width: 220px;
     }
-    input { min-width: 220px; }
     button {
-      background: var(--charcoal);
-      color: var(--white);
+      background: var(--accent);
+      color: var(--text);
+      border: 1px solid transparent;
+      padding: 10px 18px;
+      border-radius: var(--radius-btn);
       cursor: pointer;
-      transition: transform 0.08s ease, box-shadow 0.2s ease;
+      transition: all 0.2s ease;
+      font-weight: 600;
     }
     button.secondary {
-      background: var(--white);
-      color: var(--charcoal);
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: var(--text);
     }
-    button:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(86, 82, 84, 0.18); }
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 30px rgba(99, 102, 241, 0.3);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
     .actions { margin-top: 12px; }
-    .token {
-      margin-top: 8px;
-      font-family: "Consolas", "Courier New", monospace;
-      font-size: 12px;
-      color: var(--grey);
-      word-break: break-all;
+    .view { display: flex; flex-direction: column; gap: 24px; }
+    .section { display: flex; flex-direction: column; gap: 14px; }
+    .hero {
+      position: relative;
+      min-height: 280px;
+      border-radius: 16px;
+      overflow: hidden;
+      background: radial-gradient(circle at top, rgba(99, 102, 241, 0.35), transparent 60%), var(--bg-secondary);
+      display: flex;
+      align-items: flex-end;
     }
-    .status {
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: var(--hero-image, none);
+      background-size: cover;
+      background-position: center;
+      filter: saturate(1.1);
+      opacity: 0.65;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(10, 14, 39, 0.2) 0%, rgba(10, 14, 39, 0.9) 85%);
+    }
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      padding: 28px;
+      max-width: 520px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .hero-title {
+      font-size: 30px;
+      font-weight: 700;
+    }
+    .hero-meta {
+      color: var(--text-muted);
+      font-size: 13px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .hero-desc {
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 12px;
       margin-top: 8px;
-      padding: 8px 10px;
-      border-radius: 10px;
-      background: var(--snow);
-      border: 1px dashed var(--dust-grey);
-      min-height: 38px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: 12px;
-      margin-top: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+    }
+    .media-row {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(150px, 180px);
+      gap: 16px;
+      overflow-x: auto;
+      padding-bottom: 8px;
+      scroll-snap-type: x mandatory;
+    }
+    .media-row::-webkit-scrollbar {
+      height: 8px;
+    }
+    .media-row::-webkit-scrollbar-thumb {
+      background: rgba(99, 102, 241, 0.4);
+      border-radius: 999px;
+    }
+    .media-row .card {
+      scroll-snap-align: start;
     }
     .card {
-      border: 1px solid var(--dust-grey);
-      border-radius: 14px;
+      border-radius: var(--radius-card);
+      overflow: hidden;
+      background: rgba(22, 27, 51, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
       padding: 12px;
-      background: var(--white);
+      transition: all 0.2s ease;
     }
-    .card-title { font-weight: bold; margin-top: 10px; }
-    .card-year { color: var(--grey); font-size: 12px; margin-top: 4px; }
+    .card:hover {
+      transform: scale(1.03);
+      box-shadow: var(--shadow-accent);
+      border-color: rgba(99, 102, 241, 0.4);
+    }
     .poster {
       width: 100%;
       aspect-ratio: 2 / 3;
-      background: var(--dust-grey);
-      border-radius: 10px;
+      background: rgba(22, 27, 51, 0.9);
+      border-radius: 8px;
       object-fit: cover;
     }
+    .card-title {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .card-year {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
     .play-btn {
-      margin-top: 10px;
       width: 36px;
       height: 36px;
       border-radius: 50%;
@@ -1188,38 +1388,80 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       align-items: center;
       justify-content: center;
       padding: 0;
+      background: rgba(99, 102, 241, 0.2);
+      border: 1px solid rgba(99, 102, 241, 0.5);
     }
-    .meta { color: var(--grey); font-size: 12px; }
+    .badge {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(22, 27, 51, 0.8);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 4px 6px;
+      border-radius: 6px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .progress {
+      height: 4px;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+    .progress span {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      width: 0%;
+    }
+    .meta { color: var(--text-muted); font-size: 12px; }
     .player-overlay {
       position: fixed;
       inset: 0;
-      background: #000;
+      background: rgba(0, 0, 0, 0.75);
       display: none;
       align-items: center;
       justify-content: center;
       z-index: 999;
+      padding: 20px;
+      backdrop-filter: blur(6px);
     }
     .player-shell {
-      width: 100%;
-      height: 100%;
+      width: min(1080px, 100%);
       background: #000;
-      border-radius: 0;
+      border-radius: 16px;
       overflow: hidden;
-      border: none;
+      border: 1px solid rgba(255, 255, 255, 0.1);
       position: relative;
       display: flex;
       flex-direction: column;
+      max-height: 90vh;
+      backdrop-filter: blur(20px);
     }
     .player-shell.controls-visible .player-bar,
     .player-shell.controls-visible .player-controls {
       opacity: 1;
       pointer-events: auto;
     }
+    .player-shell.is-fullscreen {
+      width: 100%;
+      height: 100%;
+      border-radius: 0;
+    }
+    .player-shell.is-fullscreen video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
     .player-bar {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 8px 12px;
+      padding: 10px 14px;
       color: #fff;
       font-size: 13px;
       position: absolute;
@@ -1230,23 +1472,25 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       pointer-events: none;
       transition: opacity 0.2s ease;
       z-index: 2;
+      background: rgba(0, 0, 0, 0.6);
     }
     .player-close {
-      background: #2b2b2b;
+      background: rgba(236, 72, 153, 0.2);
       color: #fff;
-      border: 1px solid #3a3a3a;
+      border: 1px solid rgba(236, 72, 153, 0.5);
       cursor: pointer;
       flex-shrink: 0;
+      border-radius: 8px;
+      padding: 6px 10px;
     }
     .player-controls {
       display: flex;
       gap: 10px;
       align-items: center;
-      padding: 8px 12px;
-      background: #161616;
+      padding: 10px 14px;
+      background: rgba(0, 0, 0, 0.55);
       color: #fff;
       font-size: 12px;
-      border-top: 1px solid #2a2a2a;
       position: absolute;
       left: 0;
       right: 0;
@@ -1257,12 +1501,13 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       z-index: 2;
     }
     .player-ctrl {
-      background: #262626;
+      background: rgba(99, 102, 241, 0.2);
       color: #fff;
-      border: 1px solid #3a3a3a;
+      border: 1px solid rgba(99, 102, 241, 0.6);
       border-radius: 8px;
       padding: 6px 10px;
       cursor: pointer;
+      transition: all 0.2s ease;
     }
     .player-ctrl:active,
     .player-close:active {
@@ -1270,7 +1515,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     .seek-bar { flex: 1; }
     .volume-bar { width: 110px; }
-    .time-label { min-width: 90px; color: #cfcfcf; }
+    .time-label { min-width: 120px; color: #cfcfcf; }
     input[type=range] {
       -webkit-appearance: none;
       appearance: none;
@@ -1281,8 +1526,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       margin: 0;
       border: none;
       --thumb-size: 14px;
-      --track-color: #2f2f2f;
-      --fill-color: #d0cfcf;
+      --track-color: rgba(255, 255, 255, 0.2);
+      --fill-color: #6366F1;
     }
     input[type=range]::-webkit-slider-runnable-track {
       height: 6px;
@@ -1295,8 +1540,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       width: var(--thumb-size);
       height: var(--thumb-size);
       border-radius: 50%;
-      background: #d0cfcf;
-      border: 1px solid #3a3a3a;
+      background: #F3F4F6;
+      border: 1px solid rgba(255, 255, 255, 0.4);
       margin-top: -4px;
     }
     input[type=range]::-moz-range-track {
@@ -1313,74 +1558,172 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       width: var(--thumb-size);
       height: var(--thumb-size);
       border-radius: 50%;
-      background: #d0cfcf;
-      border: 1px solid #3a3a3a;
+      background: #F3F4F6;
+      border: 1px solid rgba(255, 255, 255, 0.4);
     }
     .player-controls select {
-      background: #1f1f1f;
+      background: rgba(22, 27, 51, 0.8);
       color: #fff;
-      border: 1px solid #2f2f2f;
+      border: 1px solid rgba(255, 255, 255, 0.2);
       border-radius: 8px;
       padding: 6px 8px;
       font-size: 12px;
     }
     video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+    @media (max-width: 1024px) {
+      .sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        transform: translateX(-100%);
+        z-index: 99;
+      }
+      body.sidebar-open .sidebar {
+        transform: translateX(0);
+      }
+      .sidebar-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .main {
+        padding: 20px;
+      }
+      .topbar {
+        flex-wrap: wrap;
+      }
+    }
     @media (max-width: 640px) {
       .row { flex-direction: column; align-items: stretch; }
       input { min-width: 100%; }
+      .hero { min-height: 220px; }
+      .hero-title { font-size: 22px; }
+      .grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
     }
   </style>
+
 </head>
 <body>
-  <div class="page">
-    <div class="topbar">
-      <div>
-        <div class="logo">AceCinema</div>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">AceCinema</div>
+      <div class="nav">
+        <button id="navHome" class="active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 10l9-7 9 7"/>
+            <path d="M9 22V12h6v10"/>
+          </svg>
+          <span>Accueil</span>
+        </button>
+        <button id="navMovies">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <path d="M7 4v16M17 4v16M2 10h20"/>
+          </svg>
+          <span>Films</span>
+        </button>
+        <button id="navSeries">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="5" width="18" height="14" rx="2"/>
+            <path d="M7 19l-2 3M17 19l2 3"/>
+          </svg>
+          <span>Series</span>
+        </button>
+        <button id="navList">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 6h13"/>
+            <path d="M8 12h13"/>
+            <path d="M8 18h13"/>
+            <circle cx="3" cy="6" r="1"/>
+            <circle cx="3" cy="12" r="1"/>
+            <circle cx="3" cy="18" r="1"/>
+          </svg>
+          <span>Ma liste</span>
+        </button>
+        <button id="navSettings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .66.39 1.26 1 1.51.31.13.66.2 1 .2H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>Parametres</span>
+        </button>
       </div>
-      <div class="avatar-wrap hidden" id="avatarWrap">
-        <button id="avatarBtn" class="avatar">A</button>
-        <div id="avatarMenu" class="menu hidden">
-          <button id="homeNav">Accueil</button>
-          <button id="settingsNav">Parametres</button>
-        </div>
-      </div>
-    </div>
-    <div id="authPanel" class="panel">
-      <div class="row">
-        <input id="email" placeholder="email" value="admin@example.com"/>
-        <input id="password" placeholder="password" type="password" value="changeme-admin"/>
-        <button id="loginBtn">Login</button>
-      </div>
-    </div>
-    <div id="appShell" class="hidden">
-      <div id="homeView" class="view">
-        <div id="media" class="grid"></div>
-      </div>
-      <div id="settingsView" class="view hidden">
-        <div class="panel">
-          <div class="row actions">
-            <button id="refreshBtn" class="secondary">Refresh token</button>
-            <button id="scanBtn">Scanner maintenant</button>
-            <button id="logoutBtn" class="secondary">Logout</button>
+      <div class="sidebar-footer">Build: `+buildVersion+`</div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div class="topbar-left">
+          <button id="sidebarToggle" class="sidebar-toggle">&#9776;</button>
+          <div class="search">
+            <input id="searchInput" placeholder="Rechercher un film ou une serie"/>
           </div>
         </div>
-        <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
-          <div class="row">
-            <input id="libName" placeholder="Nom (optionnel)"/>
-            <input id="libPath" placeholder="/mnt/media"/>
-            <button id="addLibBtn">Ajouter source</button>
+        <div class="avatar-wrap hidden" id="avatarWrap">
+          <button id="avatarBtn" class="avatar">A</button>
+          <div id="avatarMenu" class="menu hidden">
+            <button id="homeNav">Accueil</button>
+            <button id="settingsNav">Parametres</button>
           </div>
-          <div id="libList" class="grid"></div>
-        </div>
-        <div class="panel" style="margin-top:12px;">
-          <div class="row">
-            <div>Avatar</div>
-          </div>
-          <div class="avatar-grid" id="avatarGrid"></div>
         </div>
       </div>
-    </div>
-    <div style="margin-top:20px; color: var(--grey); font-size: 12px;">Build: `+buildVersion+`</div>
+      <div id="authPanel" class="panel auth-panel">
+        <div class="row">
+          <input id="email" placeholder="Email" value="admin@example.com"/>
+          <input id="password" placeholder="Mot de passe" type="password" value="changeme-admin"/>
+          <button id="loginBtn">Login</button>
+        </div>
+      </div>
+      <div id="appShell" class="hidden">
+        <div id="homeView" class="view">
+          <div id="hero" class="hero">
+            <div class="hero-content">
+              <div id="heroMeta" class="hero-meta">A la une</div>
+              <div id="heroTitle" class="hero-title">Bibliotheque AceCinema</div>
+              <div id="heroDesc" class="hero-desc">Selection auto de la bibliotheque locale pour une lecture immediate.</div>
+              <div class="hero-actions">
+                <button id="heroPlay">Lecture</button>
+                <button id="heroAdd" class="secondary">Ma liste</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">Recemment ajoute</div>
+            </div>
+            <div id="recentRow" class="media-row"></div>
+          </div>
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">Bibliotheque</div>
+            </div>
+            <div id="media" class="grid"></div>
+          </div>
+        </div>
+        <div id="settingsView" class="view hidden">
+          <div class="panel">
+            <div class="row actions">
+              <button id="refreshBtn" class="secondary">Refresh token</button>
+              <button id="scanBtn">Scanner maintenant</button>
+              <button id="logoutBtn" class="secondary">Logout</button>
+            </div>
+          </div>
+          <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
+            <div class="row">
+              <input id="libName" placeholder="Nom (optionnel)"/>
+              <input id="libPath" placeholder="/mnt/media"/>
+              <button id="addLibBtn">Ajouter source</button>
+            </div>
+            <div id="libList" class="grid"></div>
+          </div>
+          <div class="panel" style="margin-top:12px;">
+            <div class="row">
+              <div>Avatar</div>
+            </div>
+            <div class="avatar-grid" id="avatarGrid"></div>
+          </div>
+        </div>
+      </div>
+    </main>
   </div>
   <div id="playerOverlay" class="player-overlay">
     <div class="player-shell">
@@ -1410,6 +1753,13 @@ const appShell = document.getElementById('appShell');
 const homeView = document.getElementById('homeView');
 const settingsView = document.getElementById('settingsView');
 const mediaGrid = document.getElementById('media');
+const recentRow = document.getElementById('recentRow');
+const hero = document.getElementById('hero');
+const heroTitle = document.getElementById('heroTitle');
+const heroDesc = document.getElementById('heroDesc');
+const heroMeta = document.getElementById('heroMeta');
+const heroPlay = document.getElementById('heroPlay');
+const heroAdd = document.getElementById('heroAdd');
 const adminPanel = document.getElementById('adminPanel');
 const libList = document.getElementById('libList');
 const scanBtn = document.getElementById('scanBtn');
@@ -1417,10 +1767,26 @@ const avatarWrap = document.getElementById('avatarWrap');
 const avatarBtn = document.getElementById('avatarBtn');
 const avatarMenu = document.getElementById('avatarMenu');
 const avatarGrid = document.getElementById('avatarGrid');
+const searchInput = document.getElementById('searchInput');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const navHome = document.getElementById('navHome');
+const navMovies = document.getElementById('navMovies');
+const navSeries = document.getElementById('navSeries');
+const navList = document.getElementById('navList');
+const navSettings = document.getElementById('navSettings');
+let mediaCache = [];
+let searchQuery = '';
 function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
   avatarWrap.classList.toggle('hidden', !isAuthed);
+  if (searchInput) {
+    searchInput.disabled = !isAuthed;
+    if (!isAuthed) {
+      searchInput.value = '';
+      searchQuery = '';
+    }
+  }
   if (access) {
     console.log('token:', access);
   }
@@ -1428,14 +1794,144 @@ function setAuthed(isAuthed) {
 function showHome() {
   homeView.classList.remove('hidden');
   settingsView.classList.add('hidden');
+  setActiveNav('home');
+  document.body.classList.remove('sidebar-open');
 }
 function showSettings() {
   homeView.classList.add('hidden');
   settingsView.classList.remove('hidden');
+  setActiveNav('settings');
+  document.body.classList.remove('sidebar-open');
 }
 function setStatus(msg, isError) {
   const level = isError ? 'error' : 'log';
   console[level]('status:', msg);
+}
+function setActiveNav(target) {
+  const map = {
+    home: navHome,
+    movies: navMovies,
+    series: navSeries,
+    list: navList,
+    settings: navSettings
+  };
+  Object.keys(map).forEach(key => {
+    if (!map[key]) return;
+    map[key].classList.toggle('active', key === target);
+  });
+}
+function getDisplayTitle(m) {
+  const meta = m.metadata || {};
+  return meta.title || meta.original_title || meta.name || meta.original_name || m.title || 'Sans titre';
+}
+function getDisplayYear(m) {
+  const meta = m.metadata || {};
+  return m.year || meta.year || '';
+}
+function buildBadges(m) {
+  const badges = [];
+  const title = (m.title || '').toLowerCase();
+  if (title.includes('2160') || title.includes('4k')) {
+    badges.push('4K');
+  }
+  if (title.includes('hdr')) {
+    badges.push('HDR');
+  }
+  return badges;
+}
+function createMediaCard(m) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  const titleText = getDisplayTitle(m);
+  if (m.poster_url) {
+    const img = document.createElement('img');
+    img.className = 'poster';
+    img.loading = 'lazy';
+    img.src = m.poster_url;
+    img.alt = titleText;
+    el.appendChild(img);
+  }
+  const badges = buildBadges(m);
+  if (badges.length) {
+    const badge = document.createElement('div');
+    badge.className = 'badge';
+    badge.textContent = badges.join(' ');
+    el.appendChild(badge);
+  }
+  const title = document.createElement('div');
+  title.className = 'card-title';
+  title.textContent = titleText;
+  const year = document.createElement('div');
+  year.className = 'card-year';
+  year.textContent = String(getDisplayYear(m) || '');
+  const btn = document.createElement('button');
+  btn.className = 'play-btn';
+  btn.innerHTML = '&#9654;';
+  btn.addEventListener('click', () => play(m.id, titleText));
+  el.appendChild(title);
+  el.appendChild(year);
+  el.appendChild(btn);
+  return el;
+}
+function updateHero(item) {
+  if (!item) {
+    hero.style.setProperty('--hero-image', 'none');
+    heroTitle.textContent = 'Bibliotheque AceCinema';
+    heroDesc.textContent = 'Selection auto de la bibliotheque locale pour une lecture immediate.';
+    heroMeta.textContent = 'A la une';
+    heroPlay.disabled = true;
+    return;
+  }
+  const titleText = getDisplayTitle(item);
+  const yearText = getDisplayYear(item);
+  const meta = item.metadata || {};
+  const plot = meta.plot || meta.overview || '';
+  const backdrop = item.backdrop_url || item.poster_url || '';
+  hero.style.setProperty('--hero-image', backdrop ? 'url(' + backdrop + ')' : 'none');
+  heroTitle.textContent = titleText;
+  heroDesc.textContent = plot || 'Lecture disponible en streaming direct.';
+  heroMeta.textContent = yearText ? ('Sortie ' + yearText) : 'A la une';
+  heroPlay.disabled = false;
+  heroPlay.onclick = () => play(item.id, titleText);
+}
+function renderHome(list) {
+  mediaGrid.innerHTML = '';
+  recentRow.innerHTML = '';
+  if (!Array.isArray(list) || list.length === 0) {
+    updateHero(null);
+    setStatus('Aucun media trouve.', false);
+    return;
+  }
+  const sorted = list.slice().sort((a, b) => {
+    const ta = Date.parse(a.created_at || '') || 0;
+    const tb = Date.parse(b.created_at || '') || 0;
+    return tb - ta;
+  });
+  updateHero(sorted[0]);
+  sorted.slice(0, 12).forEach(m => recentRow.appendChild(createMediaCard(m)));
+  sorted.forEach(m => mediaGrid.appendChild(createMediaCard(m)));
+}
+function applySearch() {
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) {
+    renderHome(mediaCache);
+    return;
+  }
+  const filtered = mediaCache.filter(m => {
+    const meta = m.metadata || {};
+    const hay = [
+      m.title,
+      meta.title,
+      meta.original_title,
+      meta.name,
+      meta.original_name,
+      meta.plot,
+      meta.overview,
+      String(m.year || meta.year || '')
+    ].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+  renderHome(filtered);
 }
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1517,45 +2013,13 @@ async function loadMedia() {
     return;
   }
   const list = await res.json();
-  mediaGrid.innerHTML='';
-  if (!Array.isArray(list) || list.length === 0) {
+  if (!Array.isArray(list)) {
     setStatus('Aucun media trouve.', false);
     return;
   }
+  mediaCache = list;
   setStatus('Medias charges: ' + list.length, false);
-  list.forEach(m=>{
-    const el = document.createElement('div');
-    el.className = 'card';
-    if (m.poster_url) {
-      const img = document.createElement('img');
-      img.className = 'poster';
-      img.loading = 'lazy';
-      img.src = m.poster_url;
-      const meta = m.metadata || {};
-      const metaTitle = meta.title || meta.original_title || meta.name || meta.original_name || '';
-      const displayTitle = metaTitle || m.title || 'Sans titre';
-      img.alt = displayTitle;
-      el.appendChild(img);
-    }
-    const title = document.createElement('div');
-    title.className = 'card-title';
-    const meta = m.metadata || {};
-    const metaTitle = meta.title || meta.original_title || meta.name || meta.original_name || '';
-    const metaYear = meta.year || '';
-    const displayTitle = metaTitle || m.title || 'Sans titre';
-    title.textContent = displayTitle;
-    const year = document.createElement('div');
-    year.className = 'card-year';
-    year.textContent = m.year ? String(m.year) : (metaYear || '');
-    const btn = document.createElement('button');
-    btn.className = 'play-btn';
-    btn.innerHTML = '&#9654;';
-    btn.addEventListener('click', () => play(m.id, displayTitle));
-    el.appendChild(title);
-    el.appendChild(year);
-    el.appendChild(btn);
-    mediaGrid.appendChild(el);
-  });
+  applySearch();
 }
 async function play(id, titleText){
   if (!access) { setStatus('Not logged in', true); return; }
@@ -1605,7 +2069,8 @@ function logout(){
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
   setAuthed(false);
-  mediaGrid.innerHTML = '';
+  mediaCache = [];
+  renderHome([]);
   adminPanel.classList.add('hidden');
   scanBtn.classList.add('hidden');
   avatarMenu.classList.add('hidden');
@@ -1679,12 +2144,21 @@ async function deleteLibrary(id){
   }
   await loadLibraries();
 }
-const avatarColors = ['#565254', '#7a7d7d', '#d0cfcf', '#fffbfe', '#3a3738', '#8a8587'];
+const avatarColors = ['#6366F1', '#EC4899', '#10B981', '#0A0E27', '#161B33', '#9CA3AF'];
+function isLightColor(hex) {
+  const cleaned = hex.replace('#', '');
+  if (cleaned.length !== 6) return false;
+  const r = parseInt(cleaned.slice(0, 2), 16);
+  const g = parseInt(cleaned.slice(2, 4), 16);
+  const b = parseInt(cleaned.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.7;
+}
 function applyAvatar(color){
   const chosen = color || localStorage.getItem('avatar_color') || avatarColors[0];
   localStorage.setItem('avatar_color', chosen);
   avatarBtn.style.background = chosen;
-  avatarBtn.style.color = chosen === '#fffbfe' ? '#565254' : '#ffffff';
+  avatarBtn.style.color = isLightColor(chosen) ? '#0A0E27' : '#F3F4F6';
 }
 function buildAvatarPicker(){
   avatarGrid.innerHTML = '';
@@ -1771,15 +2245,12 @@ function closePlayer(){
 }
 function showControls(){
   playerShell.classList.add('controls-visible');
-  if (!isFullscreen) {
-    return;
-  }
   if (controlsTimer) {
     clearTimeout(controlsTimer);
   }
   controlsTimer = setTimeout(() => {
     playerShell.classList.remove('controls-visible');
-  }, 2500);
+  }, 3000);
 }
 playerShell.addEventListener('mousemove', showControls);
 async function loadAudioTracks(mediaId){
@@ -1989,6 +2460,27 @@ overlay.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && overlay.style.display === 'flex') closePlayer();
 });
+if (searchInput) {
+  searchInput.addEventListener('input', (e) => {
+    searchQuery = e.target.value || '';
+    applySearch();
+  });
+}
+if (sidebarToggle) {
+  sidebarToggle.addEventListener('click', () => {
+    document.body.classList.toggle('sidebar-open');
+  });
+}
+if (navHome) navHome.addEventListener('click', () => { showHome(); loadMedia(); });
+if (navMovies) navMovies.addEventListener('click', () => { showHome(); setActiveNav('movies'); loadMedia(); });
+if (navSeries) navSeries.addEventListener('click', () => { showHome(); setActiveNav('series'); loadMedia(); });
+if (navList) navList.addEventListener('click', () => { showHome(); setActiveNav('list'); loadMedia(); });
+if (navSettings) navSettings.addEventListener('click', () => { showSettings(); loadLibraries(); });
+if (heroAdd) {
+  heroAdd.addEventListener('click', () => {
+    setStatus('Ajoute a la liste (placeholder)', false);
+  });
+}
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);
 document.getElementById('logoutBtn').addEventListener('click', logout);
