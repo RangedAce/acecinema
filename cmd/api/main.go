@@ -419,27 +419,163 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   <meta charset="utf-8"/>
   <title>AceCinema</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    input, button { margin: 4px; }
-    .card { border: 1px solid #ccc; padding: 8px; margin: 6px 0; }
+    :root {
+      --snow: #fffbfe;
+      --grey: #7a7d7d;
+      --dust-grey: #d0cfcf;
+      --charcoal: #565254;
+      --white: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--charcoal);
+      background: radial-gradient(1200px 600px at 20% 10%, var(--snow), var(--white)) fixed;
+      font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+    }
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 20px 80px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 34px;
+      letter-spacing: 0.5px;
+    }
+    .subtitle {
+      color: var(--grey);
+      margin-bottom: 18px;
+    }
+    .panel {
+      background: var(--white);
+      border: 1px solid var(--dust-grey);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(86, 82, 84, 0.08);
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    input, button {
+      border-radius: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--dust-grey);
+      font-size: 14px;
+    }
+    input { min-width: 220px; }
+    button {
+      background: var(--charcoal);
+      color: var(--white);
+      cursor: pointer;
+      transition: transform 0.08s ease, box-shadow 0.2s ease;
+    }
+    button.secondary {
+      background: var(--white);
+      color: var(--charcoal);
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(86, 82, 84, 0.18); }
+    .actions { margin-top: 12px; }
+    .token {
+      margin-top: 8px;
+      font-family: "Consolas", "Courier New", monospace;
+      font-size: 12px;
+      color: var(--grey);
+      word-break: break-all;
+    }
+    .status {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: var(--snow);
+      border: 1px dashed var(--dust-grey);
+      min-height: 38px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .card {
+      border: 1px solid var(--dust-grey);
+      border-radius: 14px;
+      padding: 12px;
+      background: var(--white);
+    }
+    .card-title { font-weight: bold; margin-bottom: 10px; }
+    .meta { color: var(--grey); font-size: 12px; }
+    .player-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      padding: 20px;
+    }
+    .player-shell {
+      width: min(960px, 100%);
+      background: #111;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid #333;
+    }
+    .player-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: #1c1c1c;
+      color: #fff;
+      font-size: 13px;
+    }
+    .player-close {
+      background: #2b2b2b;
+      color: #fff;
+      border: 1px solid #3a3a3a;
+    }
+    video { width: 100%; height: auto; display: block; }
+    @media (max-width: 640px) {
+      .row { flex-direction: column; align-items: stretch; }
+      input { min-width: 100%; }
+    }
   </style>
 </head>
 <body>
-  <h1>AceCinema (MVP)</h1>
-  <div id="auth">
-    <input id="email" placeholder="email" value="admin@example.com"/>
-    <input id="password" placeholder="password" type="password" value="changeme-admin"/>
-    <button id="loginBtn">Login</button>
-    <button id="refreshBtn">Refresh token</button>
-    <button id="logoutBtn">Logout</button>
+  <div class="page">
+    <h1>AceCinema</h1>
+    <div class="subtitle">Bibliotheque locale + streaming (MVP)</div>
+    <div class="panel">
+      <div id="auth" class="row">
+        <input id="email" placeholder="email" value="admin@example.com"/>
+        <input id="password" placeholder="password" type="password" value="changeme-admin"/>
+        <button id="loginBtn">Login</button>
+        <button id="refreshBtn" class="secondary">Refresh token</button>
+        <button id="logoutBtn" class="secondary">Logout</button>
+      </div>
+      <div class="row actions">
+        <button id="loadBtn" class="secondary">Charger les medias</button>
+        <button id="scanBtn">Scanner maintenant</button>
+      </div>
+      <div id="status" class="status"></div>
+      <div id="token" class="token"></div>
+    </div>
+    <div id="media" class="grid"></div>
   </div>
-  <div>
-    <button id="loadBtn">Charger les medias</button>
-    <button id="scanBtn">Scanner maintenant</button>
+  <div id="playerOverlay" class="player-overlay">
+    <div class="player-shell">
+      <div class="player-bar">
+        <div id="playerTitle">Lecture</div>
+        <button id="playerClose" class="player-close">Fermer</button>
+      </div>
+      <video id="playerVideo" controls playsinline></video>
+    </div>
   </div>
-  <div id="status" style="margin-top:8px;"></div>
-  <div id="token" style="margin-top:8px; font-family: monospace;"></div>
-  <div id="media"></div>
 <script>
 let access = localStorage.getItem('access_token') || '';
 let refreshToken = localStorage.getItem('refresh_token') || '';
@@ -497,19 +633,24 @@ async function loadMedia() {
   }
   setStatus('Medias charges: ' + list.length, false);
   list.forEach(m=>{
-    const el=document.createElement('div');
-    el.className='card';
-    const title=document.createElement('div');
-    title.innerHTML='<strong>'+m.title+'</strong> ('+(m.year||'')+') - '+m.type;
-    const btn=document.createElement('button');
-    btn.textContent='Play';
-    btn.addEventListener('click',()=>play(m.id));
+    const el = document.createElement('div');
+    el.className = 'card';
+    const title = document.createElement('div');
+    title.className = 'card-title';
+    title.textContent = m.title + ' (' + (m.year || '') + ')';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = 'Type: ' + m.type;
+    const btn = document.createElement('button');
+    btn.textContent = 'Play';
+    btn.addEventListener('click', () => play(m.id, m.title));
     el.appendChild(title);
+    el.appendChild(meta);
     el.appendChild(btn);
     div.appendChild(el);
   });
 }
-async function play(id){
+async function play(id, titleText){
   if (!access) { setStatus('Not logged in', true); return; }
   const res = await fetch('/media/'+id+'/assets',{headers:{Authorization:'Bearer '+access}});
   if (!res.ok) {
@@ -523,7 +664,7 @@ async function play(id){
   const assets = await res.json();
   if(assets.length===0){setStatus('No assets for media', true); return;}
   const url='/stream?path='+encodeURIComponent(assets[0].path)+'&token='+encodeURIComponent(access);
-  window.open(url,'_blank');
+  openPlayer(url, titleText || 'Lecture');
 }
 async function scanNow(){
   if (!access) { setStatus('Not logged in', true); return; }
@@ -546,6 +687,28 @@ function logout(){
   document.getElementById('token').textContent = 'Token: (empty)';
   setStatus('Deconnecte', false);
 }
+const overlay = document.getElementById('playerOverlay');
+const playerVideo = document.getElementById('playerVideo');
+const playerTitle = document.getElementById('playerTitle');
+function openPlayer(url, titleText){
+  playerTitle.textContent = titleText;
+  playerVideo.src = url;
+  overlay.style.display = 'flex';
+  playerVideo.play().catch(()=>{});
+}
+function closePlayer(){
+  playerVideo.pause();
+  playerVideo.removeAttribute('src');
+  playerVideo.load();
+  overlay.style.display = 'none';
+}
+document.getElementById('playerClose').addEventListener('click', closePlayer);
+overlay.addEventListener('click', (e) => {
+  if (e.target === overlay) closePlayer();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && overlay.style.display === 'flex') closePlayer();
+});
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);
 document.getElementById('logoutBtn').addEventListener('click', logout);
