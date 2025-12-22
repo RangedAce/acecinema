@@ -80,7 +80,7 @@ func main() {
 			time.Sleep(interval)
 			continue
 		}
-		added, err := svc.ScanRoots(context.Background(), roots)
+		added, err := svc.ScanRoots(context.Background(), roots, false)
 		if err != nil {
 			log.Printf("scan error: %v", err)
 		} else {

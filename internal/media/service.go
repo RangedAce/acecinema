@@ -106,11 +106,11 @@ func (s *Service) Scan(ctx context.Context) (int, error) {
 	if s.mediaRoot == "" {
 		return 0, fmt.Errorf("media root not configured")
 	}
-	return s.ScanRoots(ctx, []string{s.mediaRoot})
+	return s.ScanRoots(ctx, []string{s.mediaRoot}, true)
 }
 
 // ScanRoots walks the provided roots and inserts items/assets.
-func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
+func (s *Service) ScanRoots(ctx context.Context, roots []string, refreshExisting bool) (int, error) {
 	added := 0
 	if len(roots) == 0 {
 		return 0, fmt.Errorf("no media roots configured")
@@ -141,7 +141,7 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 			}
 			title, year := parseTitle(info.Name())
 			if existingID, ok := s.lookupMediaID(ctx, relPath, absPath); ok {
-				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year)
+				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year, refreshExisting)
 				if err != nil {
 					return err
 				}
@@ -170,7 +170,7 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 				return err
 			}
 			if !applied {
-				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year)
+				inserted, err := s.ensureMediaForPath(ctx, existingID, absPath, info, title, year, refreshExisting)
 				if err != nil {
 					return err
 				}
@@ -192,6 +192,9 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 				gocql.TimeUUID(), mediaID, absPath, info.Size(), filepath.Ext(absPath)).WithContext(ctx).Exec(); err != nil {
 				return err
 			}
+			if err := s.enrichMetadata(ctx, mediaID, absPath, title, year); err != nil {
+				return err
+			}
 			if relPath != "" {
 				if err := s.ensurePathAlias(ctx, relPath, mediaID); err != nil {
 					return err
@@ -207,7 +210,7 @@ func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 	return added, nil
 }
 
-func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, path string, info os.FileInfo, title string, year int) (bool, error) {
+func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, path string, info os.FileInfo, title string, year int, refreshExisting bool) (bool, error) {
 	inserted := false
 	var existing string
 	var currentTitle string
@@ -226,7 +229,7 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, pa
 		}
 		inserted = true
 	} else {
-		if title != "" && (currentTitle != title || (year > 0 && currentYear != year)) {
+		if refreshExisting && title != "" && (currentTitle != title || (year > 0 && currentYear != year)) {
 			if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET title=?, year=? WHERE id=?`, s.keyspace),
 				title, year, mediaID).WithContext(ctx).Exec(); err != nil {
 				return false, err
@@ -234,7 +237,7 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, pa
 		}
 	}
 
-	if currentPoster == "" || len(currentMeta) == 0 {
+	if inserted || (refreshExisting && (currentPoster == "" || len(currentMeta) == 0)) {
 		if err := s.enrichMetadata(ctx, mediaID, path, title, year); err != nil {
 			return false, err
 		}

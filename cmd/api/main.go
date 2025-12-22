@@ -136,7 +136,7 @@ func main() {
 		r.Delete("/libraries/{id}", handleDeleteLibrary(session, cfg.Keyspace))
 		r.Get("/debug/tmdb", handleDebugTmdb(mediaSvc))
 		r.Post("/scan", func(w http.ResponseWriter, r *http.Request) {
-			added, err := scanWithLibraries(r.Context(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot)
+			added, err := scanWithLibraries(r.Context(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot, true)
 			if err != nil {
 				errorJSON(w, http.StatusInternalServerError, err.Error())
 				return
@@ -154,7 +154,7 @@ func main() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
-			_, _ = scanWithLibraries(context.Background(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot)
+			_, _ = scanWithLibraries(context.Background(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot, false)
 			<-ticker.C
 		}
 	}()
@@ -499,7 +499,7 @@ func tokenFromRequest(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
-func scanWithLibraries(ctx context.Context, svc *media.Service, session *gocql.Session, keyspace, fallback string) (int, error) {
+func scanWithLibraries(ctx context.Context, svc *media.Service, session *gocql.Session, keyspace, fallback string, refreshExisting bool) (int, error) {
 	roots, err := loadLibraryRoots(ctx, session, keyspace, fallback)
 	if err != nil {
 		return 0, err
@@ -507,7 +507,7 @@ func scanWithLibraries(ctx context.Context, svc *media.Service, session *gocql.S
 	if len(roots) == 0 {
 		return 0, nil
 	}
-	return svc.ScanRoots(ctx, roots)
+	return svc.ScanRoots(ctx, roots, refreshExisting)
 }
 
 func loadLibraryRoots(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]string, error) {
@@ -598,7 +598,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       margin: 0;
       color: var(--charcoal);
       background: radial-gradient(1200px 600px at 20% 10%, var(--snow), var(--white)) fixed;
-      font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+      font-family: "Garamond", "Palatino Linotype", "Book Antiqua", serif;
+      font-size: 16.5px;
     }
     .page {
       max-width: 1100px;
@@ -796,7 +797,6 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     <div class="topbar">
       <div>
         <div class="logo">AceCinema</div>
-        <div class="subtitle">Bibliotheque locale + streaming (MVP)</div>
       </div>
       <div class="avatar-wrap hidden" id="avatarWrap">
         <button id="avatarBtn" class="avatar">A</button>
@@ -1129,6 +1129,8 @@ const playerTitle = document.getElementById('playerTitle');
 function openPlayer(url, titleText){
   playerTitle.textContent = titleText;
   playerVideo.src = url;
+  playerVideo.muted = false;
+  playerVideo.volume = 1;
   overlay.style.display = 'flex';
   playerVideo.play().catch(()=>{});
 }
