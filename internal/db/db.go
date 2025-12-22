@@ -19,10 +19,10 @@ type User struct {
 }
 
 type Library struct {
-	ID        string
-	Name      string
-	Path      string
-	CreatedAt time.Time
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func EnsureSchema(session *gocql.Session, keyspace string) error {
@@ -190,5 +190,9 @@ func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, 
 }
 
 func DeleteLibrary(ctx context.Context, session *gocql.Session, keyspace, id string) error {
-	return session.Query(fmt.Sprintf(`DELETE FROM %s.libraries WHERE id=?`, keyspace), id).WithContext(ctx).Exec()
+	uid, err := gocql.ParseUUID(id)
+	if err != nil {
+		return err
+	}
+	return session.Query(fmt.Sprintf(`DELETE FROM %s.libraries WHERE id=?`, keyspace), uid).WithContext(ctx).Exec()
 }

@@ -769,8 +769,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     </div>
     <div id="appShell" class="hidden">
       <div class="panel">
-        <div id="status" class="status"></div>
-        <div id="token" class="token"></div>
+        <div class="meta">Console: status + token</div>
       </div>
       <div id="homeView" class="view">
         <div id="media" class="grid"></div>
@@ -813,8 +812,6 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
 <script>
 let access = localStorage.getItem('access_token') || '';
 let refreshToken = localStorage.getItem('refresh_token') || '';
-const statusEl = document.getElementById('status');
-const tokenEl = document.getElementById('token');
 const authPanel = document.getElementById('authPanel');
 const appShell = document.getElementById('appShell');
 const homeView = document.getElementById('homeView');
@@ -831,7 +828,9 @@ function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
   avatarWrap.classList.toggle('hidden', !isAuthed);
-  tokenEl.textContent = access ? ('Token: ' + access) : 'Token: (empty)';
+  if (access) {
+    console.log('token:', access);
+  }
 }
 function showHome() {
   homeView.classList.remove('hidden');
@@ -842,8 +841,8 @@ function showSettings() {
   settingsView.classList.remove('hidden');
 }
 function setStatus(msg, isError) {
-  statusEl.textContent = msg;
-  statusEl.style.color = isError ? '#b00' : '#060';
+  const level = isError ? 'error' : 'log';
+  console[level]('status:', msg);
 }
 async function login() {
   const res = await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});
@@ -868,7 +867,7 @@ async function refresh() {
   refreshToken = data.refresh_token||refreshToken;
   if (access) {
     localStorage.setItem('access_token', access);
-    tokenEl.textContent = 'Token: ' + access;
+    console.log('token:', access);
   }
   if (data.refresh_token) {
     localStorage.setItem('refresh_token', data.refresh_token);
