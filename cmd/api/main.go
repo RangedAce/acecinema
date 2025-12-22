@@ -911,6 +911,8 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 	}
 	args := []string{
 		"-hide_banner", "-loglevel", "info",
+		"-analyzeduration", "20M",
+		"-probesize", "20M",
 		"-i", sess.path,
 		"-map", "0:v:0",
 		"-map", mapAudio,
