@@ -18,6 +18,13 @@ type User struct {
 	MustChangePassword bool
 }
 
+type Library struct {
+	ID        string
+	Name      string
+	Path      string
+	CreatedAt time.Time
+}
+
 func EnsureSchema(session *gocql.Session, keyspace string) error {
 	stmts := []string{
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.users (
@@ -67,6 +74,7 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 			path text,
 			created_at timestamp
 		)`, keyspace),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS libraries_path_idx ON %s.libraries (path)`, keyspace),
 	}
 	for _, stmt := range stmts {
 		if err := session.Query(stmt).Exec(); err != nil {
@@ -139,4 +147,41 @@ func ChangePassword(ctx context.Context, session *gocql.Session, keyspace, userI
 	return session.Query(fmt.Sprintf(`UPDATE %s.users SET password_hash=?, must_change=false WHERE id=?`, keyspace), string(newHash), userID).
 		WithContext(ctx).
 		Exec()
+}
+
+func ListLibraries(ctx context.Context, session *gocql.Session, keyspace string) ([]Library, error) {
+	var libs []Library
+	iter := session.Query(fmt.Sprintf(`SELECT id,name,path,created_at FROM %s.libraries`, keyspace)).
+		WithContext(ctx).Iter()
+	var l Library
+	for iter.Scan(&l.ID, &l.Name, &l.Path, &l.CreatedAt) {
+		libs = append(libs, l)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	return libs, nil
+}
+
+func CreateLibrary(ctx context.Context, session *gocql.Session, keyspace, name, path string) (Library, error) {
+	var existing Library
+	err := session.Query(fmt.Sprintf(`SELECT id,name,path,created_at FROM %s.libraries WHERE path=? LIMIT 1`, keyspace), path).
+		WithContext(ctx).Scan(&existing.ID, &existing.Name, &existing.Path, &existing.CreatedAt)
+	if err == nil && existing.ID != "" {
+		return existing, nil
+	}
+	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+		return Library{}, err
+	}
+	id := gocql.TimeUUID()
+	now := time.Now()
+	if err := session.Query(fmt.Sprintf(`INSERT INTO %s.libraries (id,name,path,created_at) VALUES (?,?,?,?)`, keyspace),
+		id, name, path, now).WithContext(ctx).Exec(); err != nil {
+		return Library{}, err
+	}
+	return Library{ID: id.String(), Name: name, Path: path, CreatedAt: now}, nil
+}
+
+func DeleteLibrary(ctx context.Context, session *gocql.Session, keyspace, id string) error {
+	return session.Query(fmt.Sprintf(`DELETE FROM %s.libraries WHERE id=?`, keyspace), id).WithContext(ctx).Exec()
 }

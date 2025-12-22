@@ -47,7 +47,6 @@ services:
       APP_SECRET: change-me
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: changeme-admin
-      MEDIA_ROOT: /mnt/media
     depends_on:
       - scylla
     ports:
@@ -71,7 +70,6 @@ services:
       SCYLLA_KEYSPACE: acecinema
       SCYLLA_CONSISTENCY: ONE
       SCYLLA_RF: 1
-      MEDIA_ROOT: /mnt/media
     depends_on:
       - scylla
     volumes:

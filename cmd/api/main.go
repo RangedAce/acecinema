@@ -44,7 +44,7 @@ func loadConfig() (config, error) {
 		AppSecret:   os.Getenv("APP_SECRET"),
 		AdminEmail:  os.Getenv("ADMIN_EMAIL"),
 		AdminPass:   os.Getenv("ADMIN_PASSWORD"),
-		MediaRoot:   envDefault("MEDIA_ROOT", "/mnt/media"),
+		MediaRoot:   envDefault("MEDIA_ROOT", ""),
 		ScyllaHosts: hosts,
 		ScyllaPort:  envDefaultInt("SCYLLA_PORT", 9042),
 		Keyspace:    envDefault("SCYLLA_KEYSPACE", "acecinema"),
@@ -125,19 +125,34 @@ func main() {
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
 
-    r.With(authSvc.RequireRole("admin")).Post("/scan", func(w http.ResponseWriter, r *http.Request) {
-        added, err := mediaSvc.Scan(context.Background())
-        if err != nil {
-            errorJSON(w, http.StatusInternalServerError, err.Error())
-            return
-        }
-        writeJSON(w, http.StatusOK, map[string]interface{}{
-            "status": "scan completed",
-            "added":  added,
-        })
-    })
+	r.Route("/admin", func(r chi.Router) {
+		r.Use(authSvc.RequireRole("admin"))
+		r.Get("/libraries", handleListLibraries(session, cfg.Keyspace))
+		r.Post("/libraries", handleCreateLibrary(session, cfg.Keyspace))
+		r.Delete("/libraries/{id}", handleDeleteLibrary(session, cfg.Keyspace))
+		r.Post("/scan", func(w http.ResponseWriter, r *http.Request) {
+			added, err := scanWithLibraries(r.Context(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot)
+			if err != nil {
+				errorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status": "scan completed",
+				"added":  added,
+			})
+		})
+	})
 
-	r.Get("/stream", handleStream(mediaSvc, cfg.MediaRoot, authSvc))
+	r.Get("/stream", handleStream(session, cfg.Keyspace, cfg.MediaRoot, authSvc))
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			_, _ = scanWithLibraries(context.Background(), mediaSvc, session, cfg.Keyspace, cfg.MediaRoot)
+			<-ticker.C
+		}
+	}()
 
 	addr := ":" + cfg.Port
 	log.Printf("api listening on %s", addr)
@@ -360,7 +375,60 @@ func handleUpdateProgress(svc *media.Service) http.HandlerFunc {
 	}
 }
 
-func handleStream(svc *media.Service, mediaRoot string, authSvc *auth.Service) http.HandlerFunc {
+func handleListLibraries(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		libs, err := db.ListLibraries(r.Context(), session, keyspace)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, libs)
+	}
+}
+
+func handleCreateLibrary(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errorJSON(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		req.Path = strings.TrimSpace(req.Path)
+		if req.Path == "" {
+			errorJSON(w, http.StatusBadRequest, "path required")
+			return
+		}
+		if req.Name == "" {
+			req.Name = filepath.Base(req.Path)
+		}
+		lib, err := db.CreateLibrary(r.Context(), session, keyspace, req.Name, req.Path)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, lib)
+	}
+}
+
+func handleDeleteLibrary(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			errorJSON(w, http.StatusBadRequest, "id required")
+			return
+		}
+		if err := db.DeleteLibrary(r.Context(), session, keyspace, id); err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
+	}
+}
+
+func handleStream(session *gocql.Session, keyspace, mediaRoot string, authSvc *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := tokenFromRequest(r)
 		if token == "" {
@@ -376,9 +444,14 @@ func handleStream(svc *media.Service, mediaRoot string, authSvc *auth.Service) h
 			errorJSON(w, http.StatusBadRequest, "path required")
 			return
 		}
-		full := filepath.Clean(filepath.Join(mediaRoot, path))
-		if !strings.HasPrefix(full, filepath.Clean(mediaRoot)) {
-			errorJSON(w, http.StatusForbidden, "invalid path")
+		roots, err := loadLibraryRoots(r.Context(), session, keyspace, mediaRoot)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, err := resolveStreamPath(path, roots)
+		if err != nil {
+			errorJSON(w, http.StatusForbidden, err.Error())
 			return
 		}
 		http.ServeFile(w, r, full)
@@ -394,6 +467,70 @@ func tokenFromRequest(r *http.Request) string {
 		}
 	}
 	return r.URL.Query().Get("token")
+}
+
+func scanWithLibraries(ctx context.Context, svc *media.Service, session *gocql.Session, keyspace, fallback string) (int, error) {
+	roots, err := loadLibraryRoots(ctx, session, keyspace, fallback)
+	if err != nil {
+		return 0, err
+	}
+	if len(roots) == 0 {
+		return 0, nil
+	}
+	return svc.ScanRoots(ctx, roots)
+}
+
+func loadLibraryRoots(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]string, error) {
+	libs, err := db.ListLibraries(ctx, session, keyspace)
+	if err != nil {
+		return nil, err
+	}
+	roots := make([]string, 0, len(libs))
+	for _, lib := range libs {
+		if strings.TrimSpace(lib.Path) != "" {
+			roots = append(roots, lib.Path)
+		}
+	}
+	if len(roots) == 0 && fallback != "" {
+		roots = append(roots, fallback)
+	}
+	return roots, nil
+}
+
+func resolveStreamPath(path string, roots []string) (string, error) {
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) {
+		for _, root := range roots {
+			root = filepath.Clean(root)
+			if root == "" {
+				continue
+			}
+			if isWithinRoot(clean, root) {
+				return clean, nil
+			}
+		}
+		return "", fmt.Errorf("path not allowed")
+	}
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if root == "" {
+			continue
+		}
+		full := filepath.Join(root, clean)
+		if _, err := os.Stat(full); err == nil {
+			return full, nil
+		}
+	}
+	return "", fmt.Errorf("file not found")
+}
+
+func isWithinRoot(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
 func parseConsistency(c string) gocql.Consistency {
@@ -454,6 +591,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       padding: 16px;
       box-shadow: 0 10px 30px rgba(86, 82, 84, 0.08);
     }
+    .hidden { display: none; }
     .row {
       display: flex;
       flex-wrap: wrap;
@@ -550,22 +688,31 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   <div class="page">
     <h1>AceCinema</h1>
     <div class="subtitle">Bibliotheque locale + streaming (MVP)</div>
-    <div class="panel">
-      <div id="auth" class="row">
+    <div id="authPanel" class="panel">
+      <div class="row">
         <input id="email" placeholder="email" value="admin@example.com"/>
         <input id="password" placeholder="password" type="password" value="changeme-admin"/>
         <button id="loginBtn">Login</button>
+      </div>
+    </div>
+    <div id="appPanel" class="panel hidden">
+      <div class="row actions">
         <button id="refreshBtn" class="secondary">Refresh token</button>
         <button id="logoutBtn" class="secondary">Logout</button>
-      </div>
-      <div class="row actions">
-        <button id="loadBtn" class="secondary">Charger les medias</button>
         <button id="scanBtn">Scanner maintenant</button>
       </div>
       <div id="status" class="status"></div>
       <div id="token" class="token"></div>
+      <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
+        <div class="row">
+          <input id="libName" placeholder="Nom (optionnel)"/>
+          <input id="libPath" placeholder="/mnt/media"/>
+          <button id="addLibBtn">Ajouter source</button>
+        </div>
+        <div id="libList" class="grid"></div>
+      </div>
     </div>
-    <div id="media" class="grid"></div>
+    <div id="media" class="grid hidden"></div>
   </div>
   <div id="playerOverlay" class="player-overlay">
     <div class="player-shell">
@@ -579,8 +726,20 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
 <script>
 let access = localStorage.getItem('access_token') || '';
 let refreshToken = localStorage.getItem('refresh_token') || '';
-document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
 const statusEl = document.getElementById('status');
+const tokenEl = document.getElementById('token');
+const authPanel = document.getElementById('authPanel');
+const appPanel = document.getElementById('appPanel');
+const mediaGrid = document.getElementById('media');
+const adminPanel = document.getElementById('adminPanel');
+const libList = document.getElementById('libList');
+const scanBtn = document.getElementById('scanBtn');
+function setAuthed(isAuthed) {
+  authPanel.classList.toggle('hidden', isAuthed);
+  appPanel.classList.toggle('hidden', !isAuthed);
+  mediaGrid.classList.toggle('hidden', !isAuthed);
+  tokenEl.textContent = access ? ('Token: ' + access) : 'Token: (empty)';
+}
 function setStatus(msg, isError) {
   statusEl.textContent = msg;
   statusEl.style.color = isError ? '#b00' : '#060';
@@ -592,9 +751,10 @@ async function login() {
   refreshToken = data.refresh_token||'';
   localStorage.setItem('access_token', access);
   localStorage.setItem('refresh_token', refreshToken);
-  document.getElementById('token').textContent = access ? ('Token: ' + access) : 'Token: (empty)';
+  setAuthed(res.ok);
   setStatus(res.ok ? 'Login OK' : 'Login failed', !res.ok);
   if (res.ok) {
+    await loadLibraries();
     loadMedia();
   }
 }
@@ -606,12 +766,17 @@ async function refresh() {
   refreshToken = data.refresh_token||refreshToken;
   if (access) {
     localStorage.setItem('access_token', access);
-    document.getElementById('token').textContent = 'Token: ' + access;
+    tokenEl.textContent = 'Token: ' + access;
   }
   if (data.refresh_token) {
     localStorage.setItem('refresh_token', data.refresh_token);
   }
-  setStatus(res.ok ? 'Refresh OK' : 'Refresh failed', !res.ok);
+  if (!res.ok) {
+    logout();
+    setStatus('Refresh failed, reconnecte-toi.', true);
+    return;
+  }
+  setStatus('Refresh OK', false);
 }
 async function loadMedia() {
   if (!access) { setStatus('Not logged in', true); return; }
@@ -619,14 +784,15 @@ async function loadMedia() {
   const res = await fetch('/media',{headers:{Authorization:'Bearer '+access}});
   if (!res.ok) {
     if (res.status === 401) {
-      setStatus('Token expire, fais Refresh token.', true);
+      logout();
+      setStatus('Session expiree, reconnecte-toi.', true);
       return;
     }
     setStatus('Load failed: ' + res.status, true);
     return;
   }
   const list = await res.json();
-  const div = document.getElementById('media'); div.innerHTML='';
+  mediaGrid.innerHTML='';
   if (!Array.isArray(list) || list.length === 0) {
     setStatus('Aucun media trouve.', false);
     return;
@@ -647,7 +813,7 @@ async function loadMedia() {
     el.appendChild(title);
     el.appendChild(meta);
     el.appendChild(btn);
-    div.appendChild(el);
+    mediaGrid.appendChild(el);
   });
 }
 async function play(id, titleText){
@@ -655,7 +821,8 @@ async function play(id, titleText){
   const res = await fetch('/media/'+id+'/assets',{headers:{Authorization:'Bearer '+access}});
   if (!res.ok) {
     if (res.status === 401) {
-      setStatus('Token expire, fais Refresh token.', true);
+      logout();
+      setStatus('Session expiree, reconnecte-toi.', true);
       return;
     }
     setStatus('Assets load failed: ' + res.status, true);
@@ -668,10 +835,19 @@ async function play(id, titleText){
 }
 async function scanNow(){
   if (!access) { setStatus('Not logged in', true); return; }
-  const res = await fetch('/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
+  const res = await fetch('/admin/scan',{method:'POST',headers:{Authorization:'Bearer '+access}});
   let payload = null;
   try { payload = await res.json(); } catch (e) {}
   if (!res.ok) {
+    if (res.status === 401) {
+      logout();
+      setStatus('Session expiree, reconnecte-toi.', true);
+      return;
+    }
+    if (res.status === 403) {
+      setStatus('Acces refuse (admin requis).', true);
+      return;
+    }
     setStatus('Scan failed: ' + (payload && payload.error ? payload.error : res.status), true);
     return;
   }
@@ -684,8 +860,78 @@ function logout(){
   refreshToken = '';
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
-  document.getElementById('token').textContent = 'Token: (empty)';
+  setAuthed(false);
+  mediaGrid.innerHTML = '';
+  adminPanel.classList.add('hidden');
+  scanBtn.classList.add('hidden');
   setStatus('Deconnecte', false);
+}
+async function loadLibraries(){
+  if (!access) { return; }
+  const res = await fetch('/admin/libraries',{headers:{Authorization:'Bearer '+access}});
+  if (res.status === 401) {
+    logout();
+    setStatus('Session expiree, reconnecte-toi.', true);
+    return;
+  }
+  if (res.status === 403) {
+    adminPanel.classList.add('hidden');
+    scanBtn.classList.add('hidden');
+    return;
+  }
+  if (!res.ok) {
+    setStatus('Admin load failed: ' + res.status, true);
+    return;
+  }
+  scanBtn.classList.remove('hidden');
+  const libs = await res.json();
+  adminPanel.classList.remove('hidden');
+  libList.innerHTML = '';
+  libs.forEach(l => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    const title = document.createElement('div');
+    title.className = 'card-title';
+    title.textContent = l.name || l.path;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = l.path;
+    const btn = document.createElement('button');
+    btn.className = 'secondary';
+    btn.textContent = 'Supprimer';
+    btn.addEventListener('click', () => deleteLibrary(l.id));
+    el.appendChild(title);
+    el.appendChild(meta);
+    el.appendChild(btn);
+    libList.appendChild(el);
+  });
+}
+async function addLibrary(){
+  if (!access) { setStatus('Not logged in', true); return; }
+  const name = document.getElementById('libName').value.trim();
+  const path = document.getElementById('libPath').value.trim();
+  if (!path) { setStatus('Chemin requis', true); return; }
+  const res = await fetch('/admin/libraries',{
+    method:'POST',
+    headers:{'Content-Type':'application/json', Authorization:'Bearer '+access},
+    body:JSON.stringify({name:name, path:path})
+  });
+  if (!res.ok) {
+    setStatus('Add source failed: ' + res.status, true);
+    return;
+  }
+  document.getElementById('libName').value = '';
+  document.getElementById('libPath').value = '';
+  await loadLibraries();
+}
+async function deleteLibrary(id){
+  if (!access) { setStatus('Not logged in', true); return; }
+  const res = await fetch('/admin/libraries/'+id,{method:'DELETE',headers:{Authorization:'Bearer '+access}});
+  if (!res.ok) {
+    setStatus('Delete failed: ' + res.status, true);
+    return;
+  }
+  await loadLibraries();
 }
 const overlay = document.getElementById('playerOverlay');
 const playerVideo = document.getElementById('playerVideo');
@@ -712,8 +958,12 @@ document.addEventListener('keydown', (e) => {
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);
 document.getElementById('logoutBtn').addEventListener('click', logout);
-document.getElementById('loadBtn').addEventListener('click', loadMedia);
 document.getElementById('scanBtn').addEventListener('click', scanNow);
+document.getElementById('addLibBtn').addEventListener('click', addLibrary);
+setAuthed(!!access);
+if (access) {
+  loadLibraries().then(loadMedia);
+}
 </script>
 </body>
 </html>`)

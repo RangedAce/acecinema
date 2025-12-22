@@ -62,13 +62,24 @@ func main() {
 	}
 	defer session.Close()
 
-	mediaRoot := env("MEDIA_ROOT", "/mnt/media")
+	mediaRoot := env("MEDIA_ROOT", "")
 	svc := media.NewService(session, keyspace, mediaRoot)
 	interval := envDuration("SCAN_INTERVAL", 10*time.Minute)
 
 	log.Printf("scanner starting (media_root=%s, interval=%s)", mediaRoot, interval)
 	for {
-		added, err := svc.Scan(context.Background())
+		roots, err := loadLibraryRoots(context.Background(), session, keyspace, mediaRoot)
+		if err != nil {
+			log.Printf("load libraries: %v", err)
+			time.Sleep(interval)
+			continue
+		}
+		if len(roots) == 0 {
+			log.Printf("no library roots configured")
+			time.Sleep(interval)
+			continue
+		}
+		added, err := svc.ScanRoots(context.Background(), roots)
 		if err != nil {
 			log.Printf("scan error: %v", err)
 		} else {
@@ -117,4 +128,21 @@ func envDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+func loadLibraryRoots(ctx context.Context, session *gocql.Session, keyspace, fallback string) ([]string, error) {
+	libs, err := db.ListLibraries(ctx, session, keyspace)
+	if err != nil {
+		return nil, err
+	}
+	roots := make([]string, 0, len(libs))
+	for _, lib := range libs {
+		if strings.TrimSpace(lib.Path) != "" {
+			roots = append(roots, lib.Path)
+		}
+	}
+	if len(roots) == 0 && fallback != "" {
+		roots = append(roots, fallback)
+	}
+	return roots, nil
 }

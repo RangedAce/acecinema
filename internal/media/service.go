@@ -97,59 +97,78 @@ func (s *Service) UpdateProgress(ctx context.Context, userID, mediaID string, po
 
 // Scan walks the media root and inserts items/assets.
 func (s *Service) Scan(ctx context.Context) (int, error) {
+	if s.mediaRoot == "" {
+		return 0, fmt.Errorf("media root not configured")
+	}
+	return s.ScanRoots(ctx, []string{s.mediaRoot})
+}
+
+// ScanRoots walks the provided roots and inserts items/assets.
+func (s *Service) ScanRoots(ctx context.Context, roots []string) (int, error) {
 	added := 0
-	err := filepath.Walk(s.mediaRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	if len(roots) == 0 {
+		return 0, fmt.Errorf("no media roots configured")
+	}
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
 		}
-		if info.IsDir() {
-			return nil
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			continue
 		}
-		if !isVideo(path) {
-			return nil
-		}
-		rel, _ := filepath.Rel(s.mediaRoot, path)
-		title, year := parseTitle(info.Name())
-		mediaID := gocql.TimeUUID()
-		assetID := gocql.TimeUUID()
-		var existingPath string
-		var existingID gocql.UUID
-		applied, err := s.session.Query(
-			fmt.Sprintf(`INSERT INTO %s.media_paths (path, media_id) VALUES (?, ?) IF NOT EXISTS`, s.keyspace),
-			rel, mediaID,
-		).WithContext(ctx).ScanCAS(&existingPath, &existingID)
-		if err != nil {
-			return err
-		}
-		if !applied {
-			// already indexed; ensure media item and asset exist
-			inserted, err := s.ensureMediaForPath(ctx, existingID, rel, info, title, year)
+		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
-			if inserted {
-				added++
+			if info.IsDir() {
+				return nil
 			}
+			if !isVideo(path) {
+				return nil
+			}
+			title, year := parseTitle(info.Name())
+			mediaID := gocql.TimeUUID()
+			var existingPath string
+			var existingID gocql.UUID
+			applied, err := s.session.Query(
+				fmt.Sprintf(`INSERT INTO %s.media_paths (path, media_id) VALUES (?, ?) IF NOT EXISTS`, s.keyspace),
+				path, mediaID,
+			).WithContext(ctx).ScanCAS(&existingPath, &existingID)
+			if err != nil {
+				return err
+			}
+			if !applied {
+				// already indexed; ensure media item and asset exist
+				inserted, err := s.ensureMediaForPath(ctx, existingID, path, info, title, year)
+				if err != nil {
+					return err
+				}
+				if inserted {
+					added++
+				}
+				return nil
+			}
+			if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_items (id,type,title,year,created_at) VALUES (?,?,?,?,?)`, s.keyspace),
+				mediaID, "movie", title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
+				return err
+			}
+			if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_assets (id,media_id,path,size,format) VALUES (?,?,?,?,?)`, s.keyspace),
+				gocql.TimeUUID(), mediaID, path, info.Size(), filepath.Ext(path)).WithContext(ctx).Exec(); err != nil {
+				return err
+			}
+			added++
 			return nil
+		})
+		if err != nil {
+			return added, err
 		}
-		if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_items (id,type,title,year,created_at) VALUES (?,?,?,?,?)`, s.keyspace),
-			mediaID, "movie", title, year, time.Now()).WithContext(ctx).Exec(); err != nil {
-			return err
-		}
-		if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_assets (id,media_id,path,size,format) VALUES (?,?,?,?,?)`, s.keyspace),
-			assetID, mediaID, rel, info.Size(), filepath.Ext(path)).WithContext(ctx).Exec(); err != nil {
-			return err
-		}
-		added++
-		return nil
-	})
-	if err != nil {
-		return added, err
 	}
 	return added, nil
 }
 
-func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, rel string, info os.FileInfo, title string, year int) (bool, error) {
+func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, path string, info os.FileInfo, title string, year int) (bool, error) {
 	inserted := false
 	var existing string
 	err := s.session.Query(fmt.Sprintf(`SELECT id FROM %s.media_items WHERE id=?`, s.keyspace), mediaID).
@@ -171,7 +190,7 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, re
 	var assetID gocql.UUID
 	var assetPath string
 	for iter.Scan(&assetID, &assetPath) {
-		if assetPath == rel {
+		if assetPath == path {
 			found = true
 			break
 		}
@@ -183,7 +202,7 @@ func (s *Service) ensureMediaForPath(ctx context.Context, mediaID gocql.UUID, re
 		return inserted, nil
 	}
 	if err := s.session.Query(fmt.Sprintf(`INSERT INTO %s.media_assets (id,media_id,path,size,format) VALUES (?,?,?,?,?)`, s.keyspace),
-		gocql.TimeUUID(), mediaID, rel, info.Size(), filepath.Ext(rel)).WithContext(ctx).Exec(); err != nil {
+		gocql.TimeUUID(), mediaID, path, info.Size(), filepath.Ext(path)).WithContext(ctx).Exec(); err != nil {
 		return false, err
 	}
 	return true, nil
