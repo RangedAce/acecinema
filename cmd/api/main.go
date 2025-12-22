@@ -2943,6 +2943,20 @@ async function startHls(path, audioIndex){
       backBufferLength: 90,
       maxBufferSize: 256 * 1000 * 1000
     });
+    hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+      if (!data || !data.details) return;
+      const total = parseFloat(data.details.totalduration || 0);
+      if (isFinite(total) && total > 0) {
+        hlsDuration = total;
+        seekBar.max = total.toFixed(2);
+        updateRangeFill(seekBar);
+        if (pendingSeekTime !== null) {
+          const next = Math.min(Math.max(pendingSeekTime, 0), total);
+          playerVideo.currentTime = next;
+          pendingSeekTime = null;
+        }
+      }
+    });
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
       if (data && data.fatal) {
@@ -2992,6 +3006,10 @@ function getDuration(){
   }
   if (playerVideo.seekable && playerVideo.seekable.length > 0) {
     return playerVideo.seekable.end(playerVideo.seekable.length - 1);
+  }
+  const fallback = parseFloat(seekBar.max || '0');
+  if (isFinite(fallback) && fallback > 0) {
+    return fallback;
   }
   return 0;
 }
