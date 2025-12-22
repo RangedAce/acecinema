@@ -3515,6 +3515,8 @@ function logout(){
   profileEmail.value = '';
   oldPasswordInput.value = '';
   newPasswordInput.value = '';
+  email.value = '';
+  password.value = '';
   setAvatarLabel('A');
   closeDetails();
   showHome();
