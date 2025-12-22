@@ -1146,7 +1146,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       pointer-events: none;
       transition: opacity 0.2s ease;
     }
-    .player-shell.controls-visible .player-controls {
+    .player-shell.controls-visible .player-controls,
+    .player-shell.controls-visible .player-bar {
       opacity: 1;
       pointer-events: auto;
     }
@@ -1186,6 +1187,13 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       background: #1c1c1c;
       color: #fff;
       font-size: 13px;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
     }
     .player-close {
       background: #2b2b2b;
@@ -1261,7 +1269,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
         <button id="playToggle" class="player-ctrl">▶</button>
         <div id="timeLabel" class="time-label">0:00 / 0:00</div>
         <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" value="0"/>
-        <input id="volumeBar" class="volume-bar" type="range" min="0" max="1" step="0.05" value="1"/>
+        <input id="volumeBar" class="volume-bar" type="range" min="0" max="1" step="0.01" value="1"/>
         <select id="audioSelect">
           <option value="-1">Auto</option>
         </select>
@@ -1373,10 +1381,12 @@ async function loadMedia() {
     }
     const title = document.createElement('div');
     title.className = 'card-title';
-    title.textContent = m.title || 'Sans titre';
+    const metaTitle = m.metadata && m.metadata.title ? m.metadata.title : '';
+    const metaYear = m.metadata && m.metadata.year ? m.metadata.year : '';
+    title.textContent = m.title || metaTitle || 'Sans titre';
     const year = document.createElement('div');
     year.className = 'card-year';
-    year.textContent = m.year ? String(m.year) : '';
+    year.textContent = m.year ? String(m.year) : (metaYear || '');
     const btn = document.createElement('button');
     btn.className = 'play-btn';
     btn.textContent = '▶';
@@ -1566,6 +1576,7 @@ function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
   playerVideo.volume = 1;
+  volumeBar.value = '1';
   overlay.style.display = 'flex';
   showControls();
 }
@@ -1641,7 +1652,14 @@ async function startHls(path, audioIndex){
     });
     hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
       if (data && data.details && data.details.totalduration) {
-        hlsDuration = data.details.totalduration;
+        if (data.details.totalduration > hlsDuration) {
+          hlsDuration = data.details.totalduration;
+        }
+      }
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+      if (data && data.levels && data.levels.length > 0 && data.levels[0].details && data.levels[0].details.totalduration) {
+        hlsDuration = Math.max(hlsDuration, data.levels[0].details.totalduration);
       }
     });
     hls.loadSource(data.url);
@@ -1677,13 +1695,16 @@ function getDuration(){
   return 0;
 }
 function getSeekableRange(){
+  const duration = getDuration();
+  if (duration > 0 && isFinite(duration)) {
+    return { start: 0, end: duration };
+  }
   if (playerVideo.seekable && playerVideo.seekable.length > 0) {
     const start = playerVideo.seekable.start(0);
     const end = playerVideo.seekable.end(playerVideo.seekable.length - 1);
     return { start, end };
   }
-  const duration = getDuration();
-  return { start: 0, end: duration };
+  return { start: 0, end: 0 };
 }
 playerVideo.addEventListener('timeupdate', () => {
   const duration = getDuration();
@@ -1702,7 +1723,11 @@ seekBar.addEventListener('input', () => {
   playerVideo.currentTime = range.start + (range.end - range.start) * pct;
 });
 volumeBar.addEventListener('input', () => {
-  playerVideo.volume = parseFloat(volumeBar.value);
+  let v = parseFloat(volumeBar.value);
+  if (v > 0.98) {
+    v = 1;
+  }
+  playerVideo.volume = v;
 });
 playToggle.addEventListener('click', () => {
   if (playerVideo.paused) { playerVideo.play(); } else { playerVideo.pause(); }
