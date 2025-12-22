@@ -540,6 +540,7 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			errorJSON(w, http.StatusForbidden, err.Error())
 			return
 		}
+		duration, _ := probeDuration(full)
 		sess, err := mgr.Create(full, audioIndex)
 		if err != nil {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
@@ -556,9 +557,10 @@ func handleStreamHLS(mgr *hlsManager, session *gocql.Session, keyspace, mediaRoo
 			errorJSON(w, http.StatusInternalServerError, "hls not ready (session "+sess.id+"): "+logMsg)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{
-			"url":     "/hls/" + sess.id + "/index.m3u8",
-			"session": sess.id,
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"url":      "/hls/" + sess.id + "/index.m3u8",
+			"session":  sess.id,
+			"duration": duration,
 		})
 	}
 }
@@ -735,6 +737,20 @@ type audioTrack struct {
 	Title      string `json:"title"`
 }
 
+func probeDuration(path string) (string, error) {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func probeAudioTracks(path string) ([]audioTrack, error) {
 	cmd := exec.Command("ffprobe",
 		"-v", "error",
@@ -859,8 +875,9 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		"-sn",
 		"-f", "hls",
 		"-hls_time", "6",
-		"-hls_list_size", "6",
-		"-hls_flags", "delete_segments+append_list+independent_segments",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", filepath.Join(sess.dir, "seg%03d.ts"),
 		filepath.Join(sess.dir, "index.m3u8"),
 	}
@@ -1636,11 +1653,17 @@ async function startHls(path, audioIndex){
     setStatus('HLS failed: ' + res.status, true);
     return;
   }
-  const data = await res.json();
-  if (!data.url) {
-    setStatus('HLS url missing', true);
-    return;
-  }
+    const data = await res.json();
+    if (!data.url) {
+      setStatus('HLS url missing', true);
+      return;
+    }
+    if (data.duration) {
+      const d = parseFloat(data.duration);
+      if (!isNaN(d)) {
+        hlsDuration = d;
+      }
+    }
   if (hls) {
     hls.destroy();
     hls = null;
@@ -1726,6 +1749,7 @@ volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
   if (v > 0.98) {
     v = 1;
+    volumeBar.value = '1';
   }
   playerVideo.volume = v;
 });
