@@ -1131,6 +1131,7 @@ func parseConsistency(c string) gocql.Consistency {
 
 func serveUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	debugSeek := envDefault("DEBUG_SEEK", "") == "1"
 	fmt.Fprint(w, `<!doctype html>
 <html>
 <head>
@@ -2080,6 +2081,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     </div>
   </div>
 <script>
+const DEBUG_SEEK = `+fmt.Sprintf("%t", debugSeek)+`;
 let access = localStorage.getItem('access_token') || '';
 let refreshToken = localStorage.getItem('refresh_token') || '';
 const authPanel = document.getElementById('authPanel');
@@ -2857,6 +2859,45 @@ let pendingSeekTime = null;
 let hlsBaseOffset = 0;
 let seekRaf = null;
 let seekRafValue = null;
+function debugSeekLog() {
+  if (!DEBUG_SEEK) return;
+  console.log.apply(console, arguments);
+}
+function logSeekEvent(label, evt) {
+  if (!DEBUG_SEEK) return;
+  const clientX = evt && typeof evt.clientX === 'number' ? evt.clientX : null;
+  debugSeekLog('[seek]', label, {
+    clientX: clientX,
+    value: seekBar.value,
+    max: seekBar.max,
+    isSeeking: isSeeking,
+    seekPointerActive: seekPointerActive
+  });
+}
+function logTimelineState(label) {
+  if (!DEBUG_SEEK) return;
+  const seekable = playerVideo.seekable && playerVideo.seekable.length
+    ? [playerVideo.seekable.start(0), playerVideo.seekable.end(playerVideo.seekable.length - 1)]
+    : [];
+  const buffered = playerVideo.buffered && playerVideo.buffered.length
+    ? [playerVideo.buffered.start(0), playerVideo.buffered.end(playerVideo.buffered.length - 1)]
+    : [];
+  const info = {
+    label: label,
+    duration: getDuration(),
+    seekable: seekable,
+    buffered: buffered,
+    readyState: playerVideo.readyState,
+    src: playerVideo.currentSrc || playerVideo.src || ''
+  };
+  debugSeekLog('[timeline]', info);
+  if (hls) {
+    debugSeekLog('[timeline] hls', {
+      mediaDuration: hls.media ? hls.media.duration : null,
+      levels: hls.levels ? hls.levels.length : 0
+    });
+  }
+}
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
@@ -3019,6 +3060,16 @@ async function startHls(path, audioIndex){
         }
       }
     });
+    if (DEBUG_SEEK) {
+      hls.on(Hls.Events.FRAG_CHANGED, (event, data) => {
+        const frag = data && data.frag ? data.frag : null;
+        debugSeekLog('[hls] FRAG_CHANGED', frag ? { sn: frag.sn, start: frag.start, duration: frag.duration } : data);
+      });
+      hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+        const frag = data && data.frag ? data.frag : null;
+        debugSeekLog('[hls] FRAG_LOADED', frag ? { sn: frag.sn, start: frag.start, duration: frag.duration } : data);
+      });
+    }
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
       if (data && data.fatal) {
@@ -3028,9 +3079,11 @@ async function startHls(path, audioIndex){
     hls.loadSource(data.url);
     hls.attachMedia(playerVideo);
     playerVideo.addEventListener('canplay', tryAutoPlay);
+    logTimelineState('start');
   } else {
     playerVideo.src = data.url;
     playerVideo.addEventListener('canplay', tryAutoPlay);
+    logTimelineState('start');
   }
 }
 audioSelect.addEventListener('change', async () => {
@@ -3088,7 +3141,25 @@ function requestSeek(target){
   }
   const clamped = Math.min(Math.max(target, 0), duration);
   const local = hlsBaseOffset ? Math.max(0, clamped - hlsBaseOffset) : clamped;
+  if (DEBUG_SEEK) {
+    debugSeekLog('[seek] requestSeek', {
+      target: target,
+      duration: duration,
+      hlsBaseOffset: hlsBaseOffset,
+      clamped: clamped,
+      local: local,
+      before: playerVideo.currentTime
+    });
+  }
   playerVideo.currentTime = local;
+  if (DEBUG_SEEK) {
+    debugSeekLog('[seek] requestSeek after', {
+      after: playerVideo.currentTime
+    });
+    setTimeout(() => {
+      debugSeekLog('[vid] +200ms currentTime', playerVideo.currentTime);
+    }, 200);
+  }
   pendingSeekTime = null;
 }
 function seekFromPointer(evt){
@@ -3123,8 +3194,17 @@ function seekFromPointer(evt){
     updateRangeFill(seekBar);
     timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
   });
+  if (DEBUG_SEEK) {
+    playerVideo.addEventListener('seeking', () => debugSeekLog('[vid] seeking', playerVideo.currentTime));
+    playerVideo.addEventListener('seeked', () => debugSeekLog('[vid] seeked', playerVideo.currentTime));
+    playerVideo.addEventListener('timeupdate', () => debugSeekLog('[vid] timeupdate', playerVideo.currentTime));
+    playerVideo.addEventListener('waiting', () => debugSeekLog('[vid] waiting', playerVideo.currentTime));
+    playerVideo.addEventListener('stalled', () => debugSeekLog('[vid] stalled', playerVideo.currentTime));
+    playerVideo.addEventListener('error', () => debugSeekLog('[vid] error', playerVideo.error));
+  }
 seekBar.addEventListener('input', () => {
   isSeeking = true;
+  logSeekEvent('input', null);
   const duration = getDuration();
   if (!duration) { return; }
   const pos = Math.min(Math.max(parseFloat(seekBar.value), 0), duration);
@@ -3133,6 +3213,7 @@ seekBar.addEventListener('input', () => {
 });
 seekBar.addEventListener('change', () => {
   const t = parseFloat(seekBar.value);
+  logSeekEvent('change', null);
   requestSeek(t);
   isSeeking = false;
 });
@@ -3141,11 +3222,13 @@ seekBar.addEventListener('pointerdown', (e) => {
   seekPointerActive = true;
   isSeeking = true;
   seekBar.setPointerCapture(e.pointerId);
+  logSeekEvent('pointerdown', e);
   const value = seekFromPointer(e);
   requestSeek(value);
 });
 seekBar.addEventListener('pointermove', (e) => {
   if (!seekPointerActive) return;
+  logSeekEvent('pointermove', e);
   seekRafValue = seekFromPointer(e);
   if (seekRaf) return;
   seekRaf = requestAnimationFrame(() => {
@@ -3157,6 +3240,7 @@ seekBar.addEventListener('pointermove', (e) => {
 });
 seekBar.addEventListener('pointerup', (e) => {
   if (!seekPointerActive) return;
+  logSeekEvent('pointerup', e);
   const value = seekFromPointer(e);
   requestSeek(value);
   if (seekBar.hasPointerCapture(e.pointerId)) {
@@ -3173,8 +3257,10 @@ seekBar.addEventListener('pointercancel', (e) => {
   isSeeking = false;
 });
 seekBar.addEventListener('click', (e) => {
+  logSeekEvent('click', e);
   const value = seekFromPointer(e);
   requestSeek(value);
+  logTimelineState('click');
 });
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
