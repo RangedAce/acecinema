@@ -1193,12 +1193,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .player-overlay {
       position: fixed;
       inset: 0;
-      background: red; /* DEBUG */
+      background: #000;
       display: none;
       align-items: center;
       justify-content: center;
       z-index: 999;
-      /* padding: 20px; */
     }
     .player-shell {
       width: 100%;
@@ -1211,21 +1210,24 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       display: flex;
       flex-direction: column;
     }
-    .player-controls {
+    .player-shell.controls-visible .player-bar,
+    .player-shell.controls-visible .player-controls {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .player-bar {
       display: flex;
-      gap: 10px;
+      justify-content: space-between;
       align-items: center;
       padding: 8px 12px;
-      background: blue; /* DEBUG */
       color: #fff;
-      font-size: 12px;
-      border-top: 1px solid #2a2a2a;
+      font-size: 13px;
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 0;
-      opacity: 1; /* DEBUG */
-      pointer-events: auto; /* DEBUG */
+      top: 0;
+      opacity: 0;
+      pointer-events: none;
       transition: opacity 0.2s ease;
       z-index: 2;
     }
@@ -1234,9 +1236,93 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       color: #fff;
       border: 1px solid #3a3a3a;
       cursor: pointer;
+      flex-shrink: 0;
     }
     .player-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 12px;
+      background: #161616;
+      color: #fff;
+      font-size: 12px;
+      border-top: 1px solid #2a2a2a;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
       z-index: 2;
+    }
+    .player-ctrl {
+      background: #262626;
+      color: #fff;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    .player-ctrl:active,
+    .player-close:active {
+      transform: translateY(1px);
+    }
+    .seek-bar { flex: 1; }
+    .volume-bar { width: 110px; }
+    .time-label { min-width: 90px; color: #cfcfcf; }
+    input[type=range] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      background: transparent;
+      outline: none;
+      padding: 0;
+      margin: 0;
+      border: none;
+      --thumb-size: 14px;
+      --track-color: #2f2f2f;
+      --fill-color: #d0cfcf;
+    }
+    input[type=range]::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--fill-color) 0, var(--fill-color) var(--fill-px, 0px), var(--track-color) var(--fill-px, 0px), var(--track-color) 100%);
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: var(--thumb-size);
+      height: var(--thumb-size);
+      border-radius: 50%;
+      background: #d0cfcf;
+      border: 1px solid #3a3a3a;
+      margin-top: -4px;
+    }
+    input[type=range]::-moz-range-track {
+      height: 6px;
+      border-radius: 999px;
+      background: var(--track-color);
+    }
+    input[type=range]::-moz-range-progress {
+      height: 6px;
+      border-radius: 999px;
+      background: var(--fill-color);
+    }
+    input[type=range]::-moz-range-thumb {
+      width: var(--thumb-size);
+      height: var(--thumb-size);
+      border-radius: 50%;
+      background: #d0cfcf;
+      border: 1px solid #3a3a3a;
+    }
+    .player-controls select {
+      background: #1f1f1f;
+      color: #fff;
+      border: 1px solid #2f2f2f;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
     }
     video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
     @media (max-width: 640px) {
@@ -1650,12 +1736,13 @@ let currentHlsUrl = '';
 let hlsDuration = 0;
 let controlsTimer = null;
 let isFullscreen = false;
+let isSeeking = false;
 function openPlayer(titleText){
   playerTitle.textContent = titleText;
   playerVideo.muted = false;
   playerVideo.volume = 1;
   volumeBar.value = '1';
-  updateRangeFill(volumeBar);
+  setTimeout(() => updateRangeFill(volumeBar), 0);
   playToggle.innerHTML = ICON_PLAY;
   seekBar.value = '0';
   updateRangeFill(seekBar);
@@ -1813,12 +1900,8 @@ function updateRangeFill(range){
   const val = parseFloat(range.value || '0');
   const pct = max > min ? ((val - min) / (max - min)) : 0;
   const pctClamped = Math.min(Math.max(pct, 0), 1);
-  const width = range.getBoundingClientRect().width || 1;
-  const thumbSize = parseFloat(getComputedStyle(range).getPropertyValue('--thumb-size')) || 14;
-  const usable = Math.max(width - thumbSize, 1);
-  const fillPx = (usable * pctClamped) + (thumbSize / 2);
   range.style.setProperty('--fill', (pctClamped * 100).toFixed(2) + '%');
-  range.style.setProperty('--fill-px', fillPx.toFixed(2) + 'px');
+  range.style.setProperty('--fill-px', (range.getBoundingClientRect().width * pctClamped) + 'px');
 }
 function getDuration(){
   if (hlsDuration > 0) {
@@ -1840,6 +1923,7 @@ function getDuration(){
     timeLabel.textContent = formatTime(playerVideo.currentTime) + ' / ' + formatTime(duration);
   });
   playerVideo.addEventListener('timeupdate', () => {
+    if (isSeeking) return;
     const duration = getDuration();
     if (!duration) { return; }
     const pos = Math.min(Math.max(playerVideo.currentTime, 0), duration);
@@ -1849,6 +1933,7 @@ function getDuration(){
     timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
   });
 seekBar.addEventListener('input', () => {
+  isSeeking = true;
   const duration = getDuration();
   if (!duration) { return; }
   const pos = Math.min(Math.max(parseFloat(seekBar.value), 0), duration);
@@ -1861,6 +1946,7 @@ seekBar.addEventListener('change', () => {
   const t = parseFloat(seekBar.value);
   const global = Math.min(Math.max(t, 0), duration);
   playerVideo.currentTime = global;
+  isSeeking = false;
 });
 volumeBar.addEventListener('input', () => {
   let v = parseFloat(volumeBar.value);
