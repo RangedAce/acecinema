@@ -867,16 +867,20 @@ func (m *hlsManager) startSession(sess *hlsSession) {
 		"-map", "0:v:0",
 		"-map", mapAudio,
 		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", "23",
+		"-preset", "ultrafast",
+		"-crf", "26",
+		"-tune", "zerolatency",
+		"-g", "48",
+		"-keyint_min", "48",
+		"-sc_threshold", "0",
 		"-c:a", "aac",
 		"-ac", "2",
 		"-b:a", "160k",
 		"-sn",
 		"-f", "hls",
-		"-hls_time", "6",
+		"-hls_time", "8",
 		"-hls_list_size", "0",
-		"-hls_playlist_type", "event",
+		"-hls_playlist_type", "vod",
 		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", filepath.Join(sess.dir, "seg%03d.ts"),
 		filepath.Join(sess.dir, "index.m3u8"),
@@ -1131,7 +1135,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .player-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.7);
+      background: #000;
       display: none;
       align-items: center;
       justify-content: center;
@@ -1140,7 +1144,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     .player-shell {
       width: min(960px, 100%);
-      background: #111;
+      background: #000;
       border-radius: 16px;
       overflow: hidden;
       border: 1px solid #333;
@@ -1184,6 +1188,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       border: 1px solid #3a3a3a;
       border-radius: 8px;
       padding: 6px 10px;
+      cursor: pointer;
+    }
+    .player-ctrl:active,
+    .player-close:active {
+      transform: translateY(1px);
     }
     .seek-bar { flex: 1; }
     .volume-bar { width: 110px; }
@@ -1193,8 +1202,16 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       appearance: none;
       height: 6px;
       border-radius: 999px;
-      background: #2f2f2f;
+      background: linear-gradient(90deg, #000 0%, #000 var(--fill, 0%), #2f2f2f var(--fill, 0%), #2f2f2f 100%);
       outline: none;
+      padding: 0;
+      margin: 0;
+      border: none;
+    }
+    input[type=range]::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 999px;
+      background: transparent;
     }
     input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none;
@@ -1204,6 +1221,17 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       border-radius: 50%;
       background: #d0cfcf;
       border: 1px solid #3a3a3a;
+      margin-top: -4px;
+    }
+    input[type=range]::-moz-range-track {
+      height: 6px;
+      border-radius: 999px;
+      background: #2f2f2f;
+    }
+    input[type=range]::-moz-range-progress {
+      height: 6px;
+      border-radius: 999px;
+      background: #000;
     }
     input[type=range]::-moz-range-thumb {
       width: 14px;
@@ -1225,7 +1253,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       justify-content: space-between;
       align-items: center;
       padding: 8px 12px;
-      background: #1c1c1c;
+      background: #000;
       color: #fff;
       font-size: 13px;
       position: absolute;
@@ -1235,13 +1263,18 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.2s ease;
+      z-index: 2;
     }
     .player-close {
       background: #2b2b2b;
       color: #fff;
       border: 1px solid #3a3a3a;
+      cursor: pointer;
     }
-    video { width: 100%; height: auto; display: block; }
+    .player-controls {
+      z-index: 2;
+    }
+    video { width: 100%; height: auto; display: block; background: #000; }
     @media (max-width: 640px) {
       .row { flex-direction: column; align-items: stretch; }
       input { min-width: 100%; }
@@ -1309,7 +1342,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       <div class="player-controls">
         <button id="playToggle" class="player-ctrl">▶</button>
         <div id="timeLabel" class="time-label">0:00 / 0:00</div>
-        <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" value="0"/>
+        <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" step="0.1" value="0"/>
         <input id="volumeBar" class="volume-bar" type="range" min="0" max="1" step="0.01" value="1"/>
         <select id="audioSelect">
           <option value="-1">Auto</option>
@@ -1422,7 +1455,7 @@ async function loadMedia() {
     }
     const title = document.createElement('div');
     title.className = 'card-title';
-    const metaTitle = m.metadata && m.metadata.title ? m.metadata.title : '';
+    const metaTitle = m.metadata && (m.metadata.title || m.metadata.original_title) ? (m.metadata.title || m.metadata.original_title) : '';
     const metaYear = m.metadata && m.metadata.year ? m.metadata.year : '';
     title.textContent = m.title || metaTitle || 'Sans titre';
     const year = document.createElement('div');
@@ -1674,6 +1707,9 @@ async function loadAudioTracks(mediaId){
   audioSelect.value = String(currentAudioIndex);
 }
 async function startHls(path, audioIndex){
+  hlsDuration = 0;
+  segmentDurations = [];
+  segmentOffsets = [];
   const url = '/stream/hls?path='+encodeURIComponent(path)+'&audio='+encodeURIComponent(audioIndex);
   const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
   if (!res.ok) {
@@ -1689,7 +1725,7 @@ async function startHls(path, audioIndex){
       const d = parseFloat(data.duration);
       if (!isNaN(d)) {
         hlsDuration = d;
-        seekBar.max = String(Math.floor(d));
+        seekBar.max = d.toFixed(2);
         updateRangeFill(seekBar);
       }
     }
@@ -1698,19 +1734,18 @@ async function startHls(path, audioIndex){
     hls = null;
   }
   if (window.Hls && Hls.isSupported()) {
-    hls = new Hls();
+    hls = new Hls({
+      maxBufferLength: 120,
+      maxMaxBufferLength: 240,
+      backBufferLength: 60,
+      maxBufferSize: 120 * 1000 * 1000
+    });
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
     });
     hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
       if (data && data.details && data.details.fragments) {
         segmentDurations = data.details.fragments.map(f => f.duration || 0);
-        segmentOffsets = buildSectionOffsets(segmentDurations);
-      }
-    });
-    hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-      if (data && data.levels && data.levels.length > 0 && data.levels[0].details && data.levels[0].details.fragments) {
-        segmentDurations = data.levels[0].details.fragments.map(f => f.duration || 0);
         segmentOffsets = buildSectionOffsets(segmentDurations);
       }
     });
@@ -1739,7 +1774,7 @@ function updateRangeFill(range){
   const max = parseFloat(range.max || '100');
   const val = parseFloat(range.value || '0');
   const pct = max > min ? ((val - min) / (max - min)) * 100 : 0;
-  range.style.background = 'linear-gradient(90deg, #7a7d7d 0%, #7a7d7d ' + pct + '%, #2f2f2f ' + pct + '%, #2f2f2f 100%)';
+  range.style.setProperty('--fill', pct + '%');
 }
 function buildSectionOffsets(durations){
   const offsets = [];
@@ -1765,11 +1800,11 @@ function localToGlobal(i, tLocal){
   return start + tLocal;
 }
 function getDuration(){
-  if (isFinite(playerVideo.duration) && playerVideo.duration > 0) {
-    return playerVideo.duration;
-  }
   if (hlsDuration > 0) {
     return hlsDuration;
+  }
+  if (isFinite(playerVideo.duration) && playerVideo.duration > 0) {
+    return playerVideo.duration;
   }
   if (playerVideo.seekable && playerVideo.seekable.length > 0) {
     return playerVideo.seekable.end(playerVideo.seekable.length - 1);
@@ -1788,15 +1823,15 @@ function getSeekableRange(){
   }
   return { start: 0, end: 0 };
 }
-playerVideo.addEventListener('timeupdate', () => {
-  const duration = getDuration();
-  if (!duration) { return; }
-  const pos = Math.min(Math.max(playerVideo.currentTime, 0), duration);
-  seekBar.max = String(Math.floor(duration));
-  seekBar.value = String(Math.floor(pos));
-  updateRangeFill(seekBar);
-  timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
-});
+  playerVideo.addEventListener('timeupdate', () => {
+    const duration = getDuration();
+    if (!duration) { return; }
+    const pos = Math.min(Math.max(playerVideo.currentTime, 0), duration);
+    seekBar.max = duration.toFixed(2);
+    seekBar.value = pos.toFixed(2);
+    updateRangeFill(seekBar);
+    timeLabel.textContent = formatTime(pos) + ' / ' + formatTime(duration);
+  });
 seekBar.addEventListener('input', () => {
   const duration = getDuration();
   if (!duration) { return; }
