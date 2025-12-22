@@ -2469,12 +2469,22 @@ function updateHero(item) {
   void hero.offsetWidth;
   hero.classList.add('slide');
 }
+function shuffleList(list) {
+  const arr = Array.isArray(list) ? list.slice() : [];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
 function startHeroCarousel(list) {
   if (heroTimer) {
     clearInterval(heroTimer);
     heroTimer = null;
   }
-  heroItems = Array.isArray(list) ? list.slice(0, 8) : [];
+  heroItems = shuffleList(list).slice(0, 8);
   heroIndex = 0;
   if (heroItems.length === 0) {
     updateHero(null);
@@ -2639,9 +2649,35 @@ async function play(id, titleText){
   if(assets.length===0){setStatus('No assets for media', true); return;}
   currentAssetPath = assets[0].path;
   currentMediaId = id;
+  hlsDuration = 0;
+  hlsBaseOffset = 0;
+  pendingSeekTime = null;
   openPlayer(titleText || 'Lecture');
   await loadAudioTracks(id);
   await startHls(currentAssetPath, currentAudioIndex);
+  await loadPlaybackInfo(id);
+}
+async function loadPlaybackInfo(mediaId) {
+  if (!access) { return; }
+  try {
+    const res = await fetch('/media/' + mediaId + '/info', { headers: { Authorization: 'Bearer ' + access } });
+    if (!res.ok) {
+      return;
+    }
+    const info = await res.json();
+    const duration = parseFloat(info.duration || 0);
+    if (isFinite(duration) && duration > 0) {
+      hlsDuration = duration;
+      seekBar.max = duration.toFixed(2);
+      updateRangeFill(seekBar);
+      timeLabel.textContent = formatTime(getGlobalTime()) + ' / ' + formatTime(duration);
+      if (pendingSeekTime !== null) {
+        requestSeek(pendingSeekTime);
+      }
+    }
+  } catch (err) {
+    console.error('playback info failed', err);
+  }
 }
 async function scanNow(){
   if (!access) { setStatus('Not logged in', true); return; }
@@ -2888,7 +2924,6 @@ async function loadAudioTracks(mediaId){
   audioSelect.value = String(currentAudioIndex);
 }
 async function startHls(path, audioIndex){
-  hlsDuration = 0;
   hlsBaseOffset = 0;
   pendingSeekTime = null;
   currentHlsSession = '';
