@@ -147,8 +147,11 @@ func main() {
 	r.With(authSvc.RequireAuth).Post("/auth/change-password", handleChangePassword(session, cfg.Keyspace, authSvc))
 
 	r.Route("/users", func(r chi.Router) {
-		r.Use(authSvc.RequireRole("admin"))
-		r.Post("/", handleCreateUser(session, cfg.Keyspace))
+		r.With(authSvc.RequireAuth).Get("/me", handleGetProfile(session, cfg.Keyspace))
+		r.With(authSvc.RequireAuth).Put("/me", handleUpdateProfile(session, cfg.Keyspace))
+		r.With(authSvc.RequireRole("admin")).Get("/", handleListUsers(session, cfg.Keyspace))
+		r.With(authSvc.RequireRole("admin")).Post("/", handleCreateUser(session, cfg.Keyspace))
+		r.With(authSvc.RequireRole("admin")).Put("/{id}", handleUpdateUser(session, cfg.Keyspace))
 	})
 
 	r.Route("/media", func(r chi.Router) {
@@ -294,6 +297,12 @@ func handleLogin(session *gocql.Session, authSvc *auth.Service, cfg config) http
 			"access_token":  access,
 			"refresh_token": refresh,
 			"must_change":   user.MustChangePassword,
+			"user": map[string]interface{}{
+				"id":       user.ID,
+				"email":    user.Email,
+				"username": user.Username,
+				"role":     user.Role,
+			},
 		})
 	}
 }
@@ -323,8 +332,10 @@ func handleCreateUser(session *gocql.Session, keyspace string) http.HandlerFunc 
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Email    string `json:"email"`
+			Username string `json:"username"`
 			Password string `json:"password"`
 			Role     string `json:"role"`
+			Must     *bool  `json:"must_change"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			errorJSON(w, http.StatusBadRequest, "invalid body")
@@ -337,7 +348,11 @@ func handleCreateUser(session *gocql.Session, keyspace string) http.HandlerFunc 
 		if req.Role == "" {
 			req.Role = "user"
 		}
-		if err := db.CreateUser(r.Context(), session, keyspace, req.Email, req.Password, req.Role, false); err != nil {
+		must := false
+		if req.Must != nil {
+			must = *req.Must
+		}
+		if err := db.CreateUser(r.Context(), session, keyspace, req.Email, req.Username, req.Password, req.Role, must); err != nil {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -420,6 +435,108 @@ func handleUpdateProgress(svc *media.Service) http.HandlerFunc {
 			return
 		}
 		if err := svc.UpdateProgress(r.Context(), claims.UserID, req.MediaID, req.PositionMs); err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	}
+}
+
+func handleListUsers(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		users, err := db.ListUsers(r.Context(), session, keyspace)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out := make([]map[string]interface{}, 0, len(users))
+		for _, u := range users {
+			out = append(out, map[string]interface{}{
+				"id":          u.ID,
+				"email":       u.Email,
+				"username":    u.Username,
+				"role":        u.Role,
+				"must_change": u.MustChangePassword,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+func handleUpdateUser(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		var req struct {
+			Email    string `json:"email"`
+			Username string `json:"username"`
+			Role     string `json:"role"`
+			Must     *bool  `json:"must_change"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errorJSON(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if strings.TrimSpace(req.Email) == "" {
+			errorJSON(w, http.StatusBadRequest, "email required")
+			return
+		}
+		role := req.Role
+		if role == "" {
+			role = "user"
+		}
+		must := false
+		if req.Must != nil {
+			must = *req.Must
+		}
+		if err := db.UpdateUser(r.Context(), session, keyspace, id, req.Email, req.Username, role, must); err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if strings.TrimSpace(req.Password) != "" {
+			if err := db.UpdateUserPassword(r.Context(), session, keyspace, id, req.Password); err != nil {
+				errorJSON(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	}
+}
+
+func handleGetProfile(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := auth.ClaimsFromContext(r.Context())
+		u, err := db.GetUserByID(r.Context(), session, keyspace, claims.UserID)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":          u.ID,
+			"email":       u.Email,
+			"username":    u.Username,
+			"role":        u.Role,
+			"must_change": u.MustChangePassword,
+		})
+	}
+}
+
+func handleUpdateProfile(session *gocql.Session, keyspace string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := auth.ClaimsFromContext(r.Context())
+		var req struct {
+			Email    string `json:"email"`
+			Username string `json:"username"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			errorJSON(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if strings.TrimSpace(req.Email) == "" {
+			errorJSON(w, http.StatusBadRequest, "email required")
+			return
+		}
+		if err := db.UpdateProfile(r.Context(), session, keyspace, claims.UserID, req.Email, req.Username); err != nil {
 			errorJSON(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1676,6 +1793,16 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       margin: 80px auto 0;
     }
     .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .checkbox input {
+      min-width: auto;
+    }
     input {
       padding: 10px 12px;
       border-radius: 10px;
@@ -1802,6 +1929,12 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
       gap: 16px;
     }
+    .user-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 12px;
+    }
     .media-row {
       display: grid;
       grid-auto-flow: column;
@@ -1833,6 +1966,23 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       padding: 12px;
       transition: all 0.2s ease;
       cursor: pointer;
+    }
+    .user-card {
+      cursor: default;
+    }
+    .user-card:hover {
+      transform: none;
+      box-shadow: none;
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+    .user-card .row {
+      gap: 8px;
+    }
+    .user-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
     }
     .card:hover {
       transform: scale(1.03);
@@ -1902,8 +2052,10 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       color: var(--text-main);
       font-size: 14px;
       line-height: 1;
-      display: grid;
-      place-items: center;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       cursor: pointer;
       z-index: 2;
       transition: all 0.2s ease;
@@ -2344,8 +2496,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       </div>
       <div id="authPanel" class="panel auth-panel">
         <div class="row">
-          <input id="email" placeholder="Email" value="admin@example.com"/>
-          <input id="password" placeholder="Mot de passe" type="password" value="changeme-admin"/>
+          <input id="email" placeholder="Email"/>
+          <input id="password" placeholder="Mot de passe" type="password"/>
           <button id="loginBtn">Login</button>
         </div>
       </div>
@@ -2389,6 +2541,21 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
               <button id="logoutBtn" class="secondary">Logout</button>
             </div>
           </div>
+          <div id="profilePanel" class="panel" style="margin-top:12px;">
+            <div class="section-header">
+              <div class="section-title">Mon compte</div>
+            </div>
+            <div class="row">
+              <input id="profileUsername" placeholder="Nom d'utilisateur"/>
+              <input id="profileEmail" placeholder="Email"/>
+              <button id="profileSave">Enregistrer</button>
+            </div>
+            <div class="row" style="margin-top:8px;">
+              <input id="oldPassword" type="password" placeholder="Ancien mot de passe"/>
+              <input id="newPassword" type="password" placeholder="Nouveau mot de passe"/>
+              <button id="changePasswordBtn" class="secondary">Changer le mot de passe</button>
+            </div>
+          </div>
           <div id="adminPanel" class="panel hidden" style="margin-top:12px;">
             <div class="row">
               <input id="libName" placeholder="Nom (optionnel)"/>
@@ -2400,6 +2567,22 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
               <button id="addLibBtn">Ajouter source</button>
             </div>
             <div id="libList" class="grid"></div>
+          </div>
+          <div id="usersPanel" class="panel hidden" style="margin-top:12px;">
+            <div class="section-header">
+              <div class="section-title">Utilisateurs</div>
+            </div>
+            <div class="row">
+              <input id="newUserEmail" placeholder="Email"/>
+              <input id="newUserUsername" placeholder="Nom d'utilisateur"/>
+              <input id="newUserPassword" type="password" placeholder="Mot de passe"/>
+              <select id="newUserRole">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button id="createUserBtn">Ajouter</button>
+            </div>
+            <div id="userList" class="user-grid"></div>
           </div>
           <div class="panel" style="margin-top:12px;">
             <div class="row">
@@ -2527,6 +2710,19 @@ const detailsClose = document.getElementById('detailsClose');
 const adminPanel = document.getElementById('adminPanel');
 const libList = document.getElementById('libList');
 const scanBtn = document.getElementById('scanBtn');
+const profileUsername = document.getElementById('profileUsername');
+const profileEmail = document.getElementById('profileEmail');
+const profileSave = document.getElementById('profileSave');
+const oldPasswordInput = document.getElementById('oldPassword');
+const newPasswordInput = document.getElementById('newPassword');
+const changePasswordBtn = document.getElementById('changePasswordBtn');
+const usersPanel = document.getElementById('usersPanel');
+const userList = document.getElementById('userList');
+const newUserEmail = document.getElementById('newUserEmail');
+const newUserUsername = document.getElementById('newUserUsername');
+const newUserPassword = document.getElementById('newUserPassword');
+const newUserRole = document.getElementById('newUserRole');
+const createUserBtn = document.getElementById('createUserBtn');
 const avatarWrap = document.getElementById('avatarWrap');
 const avatarBtn = document.getElementById('avatarBtn');
 const avatarMenu = document.getElementById('avatarMenu');
@@ -2546,6 +2742,7 @@ let heroItems = [];
 let heroIndex = 0;
 let heroTimer = null;
 let activeCategory = 'all';
+let currentUser = null;
 function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
@@ -2579,6 +2776,10 @@ function showSettings() {
   setActiveNav('settings');
   document.body.classList.remove('sidebar-open');
 }
+async function loadSettings() {
+  await loadProfile();
+  await loadLibraries();
+}
 function setStatus(msg, isError) {
   const level = isError ? 'error' : 'log';
   console[level]('status:', msg);
@@ -2595,6 +2796,72 @@ function setActiveNav(target) {
     if (!map[key]) return;
     map[key].classList.toggle('active', key === target);
   });
+}
+function setAvatarLabel(name){
+  const clean = (name || '').trim();
+  const letter = clean ? clean[0].toUpperCase() : 'A';
+  avatarBtn.textContent = letter;
+}
+async function loadProfile(){
+  if (!access) { return; }
+  const res = await fetch('/users/me', { headers: { Authorization: 'Bearer ' + access } });
+  if (res.status === 401) {
+    logout();
+    setStatus('Session expiree, reconnecte-toi.', true);
+    return;
+  }
+  if (!res.ok) {
+    setStatus('Profile load failed: ' + res.status, true);
+    return;
+  }
+  const user = await res.json();
+  currentUser = user;
+  profileUsername.value = user.username || '';
+  profileEmail.value = user.email || '';
+  setAvatarLabel(user.username || user.email);
+}
+async function saveProfile(){
+  if (!access) { setStatus('Not logged in', true); return; }
+  const email = profileEmail.value.trim();
+  const username = profileUsername.value.trim();
+  if (!email) {
+    setStatus('Email requis', true);
+    return;
+  }
+  const res = await fetch('/users/me', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json', Authorization:'Bearer '+access},
+    body: JSON.stringify({ email: email, username: username })
+  });
+  if (!res.ok) {
+    setStatus('Profile update failed: ' + res.status, true);
+    return;
+  }
+  setStatus('Profil mis a jour', false);
+  await loadProfile();
+}
+async function changePassword(){
+  if (!access) { setStatus('Not logged in', true); return; }
+  const oldPass = oldPasswordInput.value.trim();
+  const newPass = newPasswordInput.value.trim();
+  if (!oldPass || !newPass) {
+    setStatus('Ancien et nouveau mot de passe requis', true);
+    return;
+  }
+  const res = await fetch('/auth/change-password', {
+    method:'POST',
+    headers:{'Content-Type':'application/json', Authorization:'Bearer '+access},
+    body: JSON.stringify({ old_password: oldPass, new_password: newPass })
+  });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch (e) {}
+    setStatus('Password update failed: ' + (payload && payload.error ? payload.error : res.status), true);
+    return;
+  }
+  oldPasswordInput.value = '';
+  newPasswordInput.value = '';
+  setStatus('Mot de passe mis a jour', false);
 }
 function getDisplayTitle(m) {
   const meta = m.metadata || {};
@@ -3077,6 +3344,7 @@ async function login() {
   setStatus(res.ok ? 'Login OK' : 'Login failed', !res.ok);
   if (res.ok) {
     showHome();
+    await loadProfile();
     await loadLibraries();
     loadMedia();
   }
@@ -3236,11 +3504,18 @@ function logout(){
   setAuthed(false);
   mediaCache = [];
   continueItems = [];
+  currentUser = null;
   renderHome([]);
   continueSection.classList.add('hidden');
   adminPanel.classList.add('hidden');
+  usersPanel.classList.add('hidden');
   scanBtn.classList.add('hidden');
   avatarMenu.classList.add('hidden');
+  profileUsername.value = '';
+  profileEmail.value = '';
+  oldPasswordInput.value = '';
+  newPasswordInput.value = '';
+  setAvatarLabel('A');
   closeDetails();
   showHome();
   setStatus('Deconnecte', false);
@@ -3256,6 +3531,7 @@ async function loadLibraries(){
   if (res.status === 403) {
     adminPanel.classList.add('hidden');
     scanBtn.classList.add('hidden');
+    usersPanel.classList.add('hidden');
     return;
   }
   if (!res.ok) {
@@ -3265,6 +3541,7 @@ async function loadLibraries(){
   scanBtn.classList.remove('hidden');
   const libs = await res.json();
   adminPanel.classList.remove('hidden');
+  loadUsers();
   libList.innerHTML = '';
   libs.forEach(l => {
     const el = document.createElement('div');
@@ -3314,6 +3591,138 @@ async function deleteLibrary(id){
   }
   await loadLibraries();
 }
+async function loadUsers(){
+  if (!access) { return; }
+  const res = await fetch('/users', { headers: { Authorization: 'Bearer ' + access } });
+  if (res.status === 401) {
+    logout();
+    setStatus('Session expiree, reconnecte-toi.', true);
+    return;
+  }
+  if (res.status === 403) {
+    usersPanel.classList.add('hidden');
+    return;
+  }
+  if (!res.ok) {
+    setStatus('Users load failed: ' + res.status, true);
+    return;
+  }
+  const users = await res.json();
+  usersPanel.classList.remove('hidden');
+  renderUsers(users);
+}
+function renderUsers(users){
+  userList.innerHTML = '';
+  users.forEach(u => {
+    const card = document.createElement('div');
+    card.className = 'card user-card';
+    const header = document.createElement('div');
+    header.className = 'user-label';
+    header.textContent = (u.role || 'user').toUpperCase();
+    const row1 = document.createElement('div');
+    row1.className = 'row';
+    const email = document.createElement('input');
+    email.value = u.email || '';
+    email.placeholder = 'Email';
+    const username = document.createElement('input');
+    username.value = u.username || '';
+    username.placeholder = "Nom d'utilisateur";
+    row1.appendChild(username);
+    row1.appendChild(email);
+    const row2 = document.createElement('div');
+    row2.className = 'row';
+    const role = document.createElement('select');
+    const optUser = document.createElement('option');
+    optUser.value = 'user';
+    optUser.textContent = 'User';
+    const optAdmin = document.createElement('option');
+    optAdmin.value = 'admin';
+    optAdmin.textContent = 'Admin';
+    role.appendChild(optUser);
+    role.appendChild(optAdmin);
+    role.value = u.role || 'user';
+    const mustWrap = document.createElement('label');
+    mustWrap.className = 'checkbox';
+    const must = document.createElement('input');
+    must.type = 'checkbox';
+    must.checked = !!u.must_change;
+    const mustText = document.createElement('span');
+    mustText.textContent = 'Forcer changement';
+    mustWrap.appendChild(must);
+    mustWrap.appendChild(mustText);
+    row2.appendChild(role);
+    row2.appendChild(mustWrap);
+    const row3 = document.createElement('div');
+    row3.className = 'row';
+    const password = document.createElement('input');
+    password.type = 'password';
+    password.placeholder = 'Nouveau mot de passe';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'secondary';
+    saveBtn.textContent = 'Sauver';
+    saveBtn.addEventListener('click', () => {
+      updateUser(u.id, {
+        email: email.value.trim(),
+        username: username.value.trim(),
+        role: role.value,
+        must_change: must.checked,
+        password: password.value.trim()
+      });
+    });
+    row3.appendChild(password);
+    row3.appendChild(saveBtn);
+    card.appendChild(header);
+    card.appendChild(row1);
+    card.appendChild(row2);
+    card.appendChild(row3);
+    userList.appendChild(card);
+  });
+}
+async function createUser(){
+  if (!access) { setStatus('Not logged in', true); return; }
+  const email = newUserEmail.value.trim();
+  const username = newUserUsername.value.trim();
+  const password = newUserPassword.value.trim();
+  const role = newUserRole.value || 'user';
+  if (!email || !password) {
+    setStatus('Email et mot de passe requis', true);
+    return;
+  }
+  const res = await fetch('/users', {
+    method:'POST',
+    headers:{'Content-Type':'application/json', Authorization:'Bearer '+access},
+    body: JSON.stringify({ email: email, username: username, password: password, role: role })
+  });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch (e) {}
+    setStatus('Create user failed: ' + (payload && payload.error ? payload.error : res.status), true);
+    return;
+  }
+  newUserEmail.value = '';
+  newUserUsername.value = '';
+  newUserPassword.value = '';
+  await loadUsers();
+}
+async function updateUser(id, payload){
+  if (!access) { setStatus('Not logged in', true); return; }
+  if (!payload.email) {
+    setStatus('Email requis', true);
+    return;
+  }
+  const res = await fetch('/users/' + id, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json', Authorization:'Bearer '+access},
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    setStatus('Update user failed: ' + (data && data.error ? data.error : res.status), true);
+    return;
+  }
+  await loadUsers();
+}
 const avatarColors = ['#6366F1', '#EC4899', '#10B981', '#0A0E27', '#161B33', '#9CA3AF'];
 function isLightColor(hex) {
   const cleaned = hex.replace('#', '');
@@ -3351,7 +3760,7 @@ document.getElementById('homeNav').addEventListener('click', () => {
 document.getElementById('settingsNav').addEventListener('click', () => {
   avatarMenu.classList.add('hidden');
   showSettings();
-  loadLibraries();
+  loadSettings();
 });
 document.addEventListener('click', (e) => {
   if (!avatarWrap.contains(e.target)) {
@@ -4090,7 +4499,7 @@ if (navList) navList.addEventListener('click', () => {
   setActiveNav('list');
   loadMedia();
 });
-if (navSettings) navSettings.addEventListener('click', () => { showSettings(); loadLibraries(); });
+if (navSettings) navSettings.addEventListener('click', () => { showSettings(); loadSettings(); });
 if (heroAdd) {
   heroAdd.addEventListener('click', () => {
     setStatus('Ajoute a la liste (placeholder)', false);
@@ -4101,6 +4510,9 @@ document.getElementById('refreshBtn').addEventListener('click', refresh);
 document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('scanBtn').addEventListener('click', scanNow);
 document.getElementById('addLibBtn').addEventListener('click', addLibrary);
+profileSave.addEventListener('click', saveProfile);
+changePasswordBtn.addEventListener('click', changePassword);
+createUserBtn.addEventListener('click', createUser);
 window.addEventListener('resize', () => {
   updateRangeFill(seekBar);
   updateRangeFill(volumeBar);
@@ -4110,7 +4522,7 @@ if (access) {
   applyAvatar();
   buildAvatarPicker();
   showHome();
-  loadLibraries().then(loadMedia);
+  loadProfile().then(() => loadLibraries()).then(loadMedia);
 } else {
   applyAvatar();
   buildAvatarPicker();

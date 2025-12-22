@@ -14,6 +14,7 @@ import (
 type User struct {
 	ID                 string
 	Email              string
+	Username           string
 	PasswordHash       string
 	Role               string
 	MustChangePassword bool
@@ -32,6 +33,7 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.users (
 			id uuid PRIMARY KEY,
 			email text,
+			username text,
 			password_hash text,
 			role text,
 			must_change boolean,
@@ -87,6 +89,9 @@ func EnsureSchema(session *gocql.Session, keyspace string) error {
 	if err := ensureLibraryKindColumn(session, keyspace); err != nil {
 		return err
 	}
+	if err := ensureUsersUsernameColumn(session, keyspace); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -100,6 +105,33 @@ func ensureLibraryKindColumn(session *gocql.Session, keyspace string) error {
 		return nil
 	}
 	return err
+}
+
+func ensureUsersUsernameColumn(session *gocql.Session, keyspace string) error {
+	err := session.Query(fmt.Sprintf(`ALTER TABLE %s.users ADD username text`, keyspace)).Exec()
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "already") || strings.Contains(msg, "conflict") {
+		return nil
+	}
+	return err
+}
+
+func normalizeUsername(email, username string) string {
+	name := strings.TrimSpace(username)
+	if name != "" {
+		return name
+	}
+	clean := strings.TrimSpace(email)
+	if clean != "" {
+		if at := strings.Index(clean, "@"); at > 0 {
+			return clean[:at]
+		}
+		return clean
+	}
+	return "user"
 }
 
 func EnsureKeyspace(session *gocql.Session, keyspace string, replicationFactor int) error {
@@ -119,30 +151,34 @@ func EnsureAdmin(ctx context.Context, session *gocql.Session, keyspace, email, p
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
 		return err
 	}
-	return CreateUser(ctx, session, keyspace, email, password, "admin", true)
+	return CreateUser(ctx, session, keyspace, email, "", password, "admin", true)
 }
 
-func CreateUser(ctx context.Context, session *gocql.Session, keyspace, email, password, role string, mustChange bool) error {
+func CreateUser(ctx context.Context, session *gocql.Session, keyspace, email, username, password, role string, mustChange bool) error {
 	id := gocql.TimeUUID()
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
-	return session.Query(fmt.Sprintf(`INSERT INTO %s.users (id,email,password_hash,role,must_change,created_at)
-		VALUES (?,?,?,?,?,?)`, keyspace),
-		id, email, string(hash), role, mustChange, time.Now()).WithContext(ctx).Exec()
+	normalized := normalizeUsername(email, username)
+	return session.Query(fmt.Sprintf(`INSERT INTO %s.users (id,email,username,password_hash,role,must_change,created_at)
+		VALUES (?,?,?,?,?,?,?)`, keyspace),
+		id, email, normalized, string(hash), role, mustChange, time.Now()).WithContext(ctx).Exec()
 }
 
 func Authenticate(ctx context.Context, session *gocql.Session, keyspace, email, password string) (User, error) {
 	var u User
-	err := session.Query(fmt.Sprintf(`SELECT id,email,password_hash,role,must_change FROM %s.users WHERE email=? LIMIT 1`, keyspace), email).
+	err := session.Query(fmt.Sprintf(`SELECT id,email,username,password_hash,role,must_change FROM %s.users WHERE email=? LIMIT 1`, keyspace), email).
 		WithContext(ctx).
-		Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.MustChangePassword)
+		Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.Role, &u.MustChangePassword)
 	if err != nil {
 		return User{}, err
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		return User{}, errors.New("invalid credentials")
+	}
+	if u.Username == "" {
+		u.Username = normalizeUsername(u.Email, "")
 	}
 	return u, nil
 }
@@ -163,6 +199,80 @@ func ChangePassword(ctx context.Context, session *gocql.Session, keyspace, userI
 		return err
 	}
 	return session.Query(fmt.Sprintf(`UPDATE %s.users SET password_hash=?, must_change=false WHERE id=?`, keyspace), string(newHash), userID).
+		WithContext(ctx).
+		Exec()
+}
+
+func GetUserByID(ctx context.Context, session *gocql.Session, keyspace, userID string) (User, error) {
+	var u User
+	id, err := gocql.ParseUUID(userID)
+	if err != nil {
+		return User{}, err
+	}
+	err = session.Query(fmt.Sprintf(`SELECT id,email,username,role,must_change FROM %s.users WHERE id=?`, keyspace), id).
+		WithContext(ctx).
+		Scan(&u.ID, &u.Email, &u.Username, &u.Role, &u.MustChangePassword)
+	if err != nil {
+		return User{}, err
+	}
+	if u.Username == "" {
+		u.Username = normalizeUsername(u.Email, "")
+	}
+	return u, nil
+}
+
+func ListUsers(ctx context.Context, session *gocql.Session, keyspace string) ([]User, error) {
+	var users []User
+	iter := session.Query(fmt.Sprintf(`SELECT id,email,username,role,must_change FROM %s.users`, keyspace)).
+		WithContext(ctx).Iter()
+	var u User
+	for iter.Scan(&u.ID, &u.Email, &u.Username, &u.Role, &u.MustChangePassword) {
+		if u.Username == "" {
+			u.Username = normalizeUsername(u.Email, "")
+		}
+		users = append(users, u)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func UpdateUser(ctx context.Context, session *gocql.Session, keyspace, userID, email, username, role string, mustChange bool) error {
+	id, err := gocql.ParseUUID(userID)
+	if err != nil {
+		return err
+	}
+	normalized := normalizeUsername(email, username)
+	return session.Query(fmt.Sprintf(`UPDATE %s.users SET email=?, username=?, role=?, must_change=? WHERE id=?`, keyspace),
+		email, normalized, role, mustChange, id).
+		WithContext(ctx).
+		Exec()
+}
+
+func UpdateUserPassword(ctx context.Context, session *gocql.Session, keyspace, userID, password string) error {
+	id, err := gocql.ParseUUID(userID)
+	if err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return session.Query(fmt.Sprintf(`UPDATE %s.users SET password_hash=?, must_change=true WHERE id=?`, keyspace),
+		string(hash), id).
+		WithContext(ctx).
+		Exec()
+}
+
+func UpdateProfile(ctx context.Context, session *gocql.Session, keyspace, userID, email, username string) error {
+	id, err := gocql.ParseUUID(userID)
+	if err != nil {
+		return err
+	}
+	normalized := normalizeUsername(email, username)
+	return session.Query(fmt.Sprintf(`UPDATE %s.users SET email=?, username=? WHERE id=?`, keyspace),
+		email, normalized, id).
 		WithContext(ctx).
 		Exec()
 }
