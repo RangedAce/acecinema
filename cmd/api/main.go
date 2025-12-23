@@ -2296,6 +2296,50 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       transition: opacity 0.2s ease;
       z-index: 2;
     }
+    .player-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: rgba(10, 14, 39, 0.4);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 3;
+    }
+    .player-loading.active {
+      opacity: 1;
+    }
+    .player-loading-text {
+      color: var(--text-main);
+      font-size: 12px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .spinner {
+      width: 52px;
+      height: 52px;
+      position: relative;
+      animation: spinner-rotate 1.1s linear infinite;
+    }
+    .spinner span {
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      top: 50%;
+      left: 50%;
+      transform: rotate(calc(var(--i) * 45deg)) translate(18px);
+      opacity: calc(0.2 + (var(--i) / 12));
+    }
+    @keyframes spinner-rotate {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
     .seek-wrap {
       position: relative;
       flex: 1;
@@ -2647,6 +2691,19 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
         <button id="playerClose" class="player-close">Fermer</button>
       </div>
       <video id="playerVideo" playsinline></video>
+      <div id="playerLoading" class="player-loading">
+        <div class="spinner">
+          <span style="--i:0"></span>
+          <span style="--i:1"></span>
+          <span style="--i:2"></span>
+          <span style="--i:3"></span>
+          <span style="--i:4"></span>
+          <span style="--i:5"></span>
+          <span style="--i:6"></span>
+          <span style="--i:7"></span>
+        </div>
+        <div id="playerLoadingText" class="player-loading-text">Chargement...</div>
+      </div>
       <div class="player-controls">
         <button id="playToggle" class="player-ctrl">&#9654;</button>
         <div id="timeLabel" class="time-label">0:00 / 0:00</div>
@@ -2665,8 +2722,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   </div>
 <script>
 const DEBUG_SEEK = `+fmt.Sprintf("%t", debugSeek)+`;
-let access = localStorage.getItem('access_token') || '';
-let refreshToken = localStorage.getItem('refresh_token') || '';
+let access = sessionStorage.getItem('access_token') || '';
+let refreshToken = sessionStorage.getItem('refresh_token') || '';
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+const IDLE_CHECK_MS = 60 * 1000;
+const TOKEN_REFRESH_MS = 25 * 60 * 1000;
+let lastActivityAt = Date.now();
+let idleTimer = null;
+let refreshTimer = null;
 const authPanel = document.getElementById('authPanel');
 const appShell = document.getElementById('appShell');
 const homeView = document.getElementById('homeView');
@@ -2748,6 +2811,11 @@ function setAuthed(isAuthed) {
   }
   if (heroAdd) {
     heroAdd.classList.add('hidden');
+  }
+  if (isAuthed) {
+    startSessionTimers();
+  } else {
+    stopSessionTimers();
   }
   if (searchInput) {
     searchInput.disabled = !isAuthed;
@@ -3340,8 +3408,8 @@ async function login() {
   const data = await res.json();
   access = data.access_token||'';
   refreshToken = data.refresh_token||'';
-  localStorage.setItem('access_token', access);
-  localStorage.setItem('refresh_token', refreshToken);
+  sessionStorage.setItem('access_token', access);
+  sessionStorage.setItem('refresh_token', refreshToken);
   setAuthed(res.ok);
   setStatus(res.ok ? 'Login OK' : 'Login failed', !res.ok);
   if (res.ok) {
@@ -3358,11 +3426,11 @@ async function refresh() {
   access = data.access_token||'';
   refreshToken = data.refresh_token||refreshToken;
   if (access) {
-    localStorage.setItem('access_token', access);
+    sessionStorage.setItem('access_token', access);
     console.log('token:', access);
   }
   if (data.refresh_token) {
-    localStorage.setItem('refresh_token', data.refresh_token);
+    sessionStorage.setItem('refresh_token', data.refresh_token);
   }
   if (!res.ok) {
     logout();
@@ -3438,6 +3506,7 @@ async function removeProgress(mediaId) {
 }
 async function play(id, titleText, resumeMs){
   if (!access) { setStatus('Not logged in', true); return; }
+  recordActivity();
   currentMediaId = id;
   catalogDuration = 0;
   hlsBaseOffset = 0;
@@ -3445,6 +3514,7 @@ async function play(id, titleText, resumeMs){
   lastProgressSentAt = 0;
   lastProgressSentMs = 0;
   openPlayer(titleText || 'Lecture');
+  setPlayerLoading(true, 'Chargement...');
   await loadAudioTracks(id);
   const resumeSec = Math.max(0, (resumeMs || 0) / 1000);
   await startPlayback(id, resumeSec);
@@ -3501,8 +3571,8 @@ async function scanNow(){
 function logout(){
   access = '';
   refreshToken = '';
-  localStorage.removeItem('access_token');
-  localStorage.removeItem('refresh_token');
+  sessionStorage.removeItem('access_token');
+  sessionStorage.removeItem('refresh_token');
   setAuthed(false);
   mediaCache = [];
   continueItems = [];
@@ -3780,6 +3850,8 @@ const audioHint = document.getElementById('audioHint');
 const playToggle = document.getElementById('playToggle');
 const seekBar = document.getElementById('seekBar');
 const seekPreview = document.getElementById('seekPreview');
+const playerLoading = document.getElementById('playerLoading');
+const playerLoadingText = document.getElementById('playerLoadingText');
 const volumeBar = document.getElementById('volumeBar');
 const timeLabel = document.getElementById('timeLabel');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
@@ -3813,6 +3885,47 @@ let lastProgressSentMs = 0;
 function debugSeekLog() {
   if (!DEBUG_SEEK) return;
   console.log.apply(console, arguments);
+}
+function recordActivity(){
+  lastActivityAt = Date.now();
+}
+function startSessionTimers(){
+  if (!idleTimer) {
+    idleTimer = setInterval(() => {
+      if (!access) return;
+      if (Date.now() - lastActivityAt >= IDLE_TIMEOUT_MS) {
+        setStatus('Session expiree (inactivite).', true);
+        logout();
+      }
+    }, IDLE_CHECK_MS);
+  }
+  if (!refreshTimer) {
+    refreshTimer = setInterval(() => {
+      if (!access || !refreshToken) return;
+      if (Date.now() - lastActivityAt >= IDLE_TIMEOUT_MS) return;
+      refresh();
+    }, TOKEN_REFRESH_MS);
+  }
+}
+function stopSessionTimers(){
+  if (idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = null;
+  }
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+function setPlayerLoading(active, text){
+  if (!playerLoading) return;
+  if (active) {
+    playerLoading.classList.add('active');
+    playerLoadingText.textContent = text || 'Chargement...';
+  } else {
+    playerLoading.classList.remove('active');
+    playerLoadingText.textContent = '';
+  }
 }
 function logSeekEvent(label, evt) {
   if (!DEBUG_SEEK) return;
@@ -3852,9 +3965,11 @@ function logTimelineState(label) {
 function setSeekHold(target) {
   seekHoldActive = true;
   seekHoldTarget = target;
+  setPlayerLoading(true, 'Repositionnement...');
 }
 function releaseSeekHold() {
   seekHoldActive = false;
+  setPlayerLoading(false);
 }
 function showSeekPreview(value, pct) {
   if (!seekPreview) return;
@@ -3908,6 +4023,7 @@ function closePlayer(){
     clearTimeout(controlsTimer);
     controlsTimer = null;
   }
+  setPlayerLoading(false);
   overlay.style.display = 'none';
   document.body.classList.remove('no-scroll');
 }
@@ -3924,6 +4040,7 @@ playerVideo.addEventListener('timeupdate', () => {
   if (currentStreamMode === 'hls' && !seekHoldActive) {
     hlsErrorCount = 0;
   }
+  recordActivity();
 });
 playerShell.addEventListener('mousemove', showControls);
 async function loadAudioTracks(mediaId){
@@ -3955,6 +4072,7 @@ async function startPlayback(mediaId, startAt){
   pendingSeekTime = null;
   currentStreamUrl = '';
   currentHlsSession = '';
+  setPlayerLoading(true, 'Chargement...');
   const startValue = (isFinite(startAt) && startAt > 0) ? startAt : 0;
   const audioIndex = isFinite(currentAudioIndex) ? currentAudioIndex : -1;
   const url = '/stream/session?mediaId=' + encodeURIComponent(mediaId) + '&audio=' + encodeURIComponent(audioIndex) + (startValue > 0 ? ('&start=' + encodeURIComponent(startValue.toFixed(2))) : '');
@@ -3968,10 +4086,12 @@ async function startPlayback(mediaId, startAt){
     }
     const message = data && data.error ? data.error : (bodyText || res.status);
     setStatus('Stream failed: ' + message, true);
+    setPlayerLoading(false);
     return;
   }
   if (!data || !data.url) {
     setStatus('Stream url missing', true);
+    setPlayerLoading(false);
     return;
   }
   currentStreamMode = data.mode || 'hls';
@@ -4009,6 +4129,7 @@ async function startDirect(url, startAt){
   playerVideo.src = url;
   playerVideo.addEventListener('canplay', () => {
     releaseSeekHold();
+    setPlayerLoading(false);
     playerVideo.play().catch(err => console.error('play failed', err));
   }, { once: true });
   logTimelineState('start');
@@ -4028,6 +4149,7 @@ async function startTranscode(url, sessionId, startAt, status){
     if (ahead >= 4) {
       didAutoPlay = true;
       releaseSeekHold();
+      setPlayerLoading(false);
       playerVideo.play().catch(err => console.error('play failed', err));
     }
   };
@@ -4051,10 +4173,12 @@ async function startTranscode(url, sessionId, startAt, status){
   }
   if (status === 'starting') {
     setStatus('Transcode en demarrage...', false);
+    setPlayerLoading(true, 'Transcodage...');
   }
   const ready = await waitForManifest(url, sessionId, 90000);
   if (!ready) {
     setStatus('HLS manifest not ready', true);
+    setPlayerLoading(false);
     return;
   }
   if (window.Hls && Hls.isSupported()) {
@@ -4110,6 +4234,7 @@ async function startTranscode(url, sessionId, startAt, status){
     hls.attachMedia(playerVideo);
     playerVideo.addEventListener('canplay', () => {
       releaseSeekHold();
+      setPlayerLoading(false);
       tryAutoPlay();
     }, { once: true });
     logTimelineState('start');
@@ -4117,6 +4242,7 @@ async function startTranscode(url, sessionId, startAt, status){
     playerVideo.src = url;
     playerVideo.addEventListener('canplay', () => {
       releaseSeekHold();
+      setPlayerLoading(false);
       tryAutoPlay();
     }, { once: true });
     logTimelineState('start');
@@ -4316,6 +4442,7 @@ function recoverFromHlsError(reason) {
   }
   const resumeAt = Math.max(getGlobalTime() - 0.5, 0);
   setStatus('Lecture interrompue, reprise en cours...', true);
+  setPlayerLoading(true, 'Reconnexion...');
   playerVideo.pause();
   setSeekHold(resumeAt);
   scheduleRestart(resumeAt);
@@ -4552,6 +4679,16 @@ document.getElementById('addLibBtn').addEventListener('click', addLibrary);
 profileSave.addEventListener('click', saveProfile);
 changePasswordBtn.addEventListener('click', changePassword);
 createUserBtn.addEventListener('click', createUser);
+['click','keydown','mousemove','scroll','touchstart'].forEach(evt => {
+  document.addEventListener(evt, recordActivity, { passive: true });
+});
+playerVideo.addEventListener('play', recordActivity);
+window.addEventListener('pagehide', () => {
+  sessionStorage.removeItem('access_token');
+  sessionStorage.removeItem('refresh_token');
+  access = '';
+  refreshToken = '';
+});
 window.addEventListener('resize', () => {
   updateRangeFill(seekBar);
   updateRangeFill(volumeBar);
