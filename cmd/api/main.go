@@ -3802,6 +3802,10 @@ let lastRestartAt = 0;
 let restartTimer = null;
 let queuedRestartTarget = null;
 const RESTART_COOLDOWN_MS = 1200;
+let lastHlsErrorAt = 0;
+let hlsErrorCount = 0;
+const HLS_ERROR_COOLDOWN_MS = 1500;
+const HLS_ERROR_MAX = 5;
 let seekHoldActive = false;
 let seekHoldTarget = 0;
 let lastProgressSentAt = 0;
@@ -3916,6 +3920,11 @@ function showControls(){
     playerShell.classList.remove('controls-visible');
   }, 3000);
 }
+playerVideo.addEventListener('timeupdate', () => {
+  if (currentStreamMode === 'hls' && !seekHoldActive) {
+    hlsErrorCount = 0;
+  }
+});
 playerShell.addEventListener('mousemove', showControls);
 async function loadAudioTracks(mediaId){
   audioSelect.innerHTML = '<option value="-1">Auto</option>';
@@ -4086,6 +4095,13 @@ async function startTranscode(url, sessionId, startAt, status){
     }
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
+      const code = data && data.response ? data.response.code : 0;
+      const isServerErr = code >= 500;
+      const isNet = data && data.type === Hls.ErrorTypes.NETWORK_ERROR;
+      const isMedia = data && data.type === Hls.ErrorTypes.MEDIA_ERROR;
+      if (isServerErr || isNet || isMedia) {
+        recoverFromHlsError(data.details || data.type || code);
+      }
       if (data && data.fatal) {
         setStatus('HLS failed: ' + (data.details || data.type), true);
       }
@@ -4287,6 +4303,25 @@ function scheduleRestart(target) {
       startPlayback(currentMediaId, t);
     }
   }, Math.max(RESTART_COOLDOWN_MS - elapsed, 0));
+}
+function recoverFromHlsError(reason) {
+  if (currentStreamMode !== 'hls' || !currentMediaId) return;
+  const now = Date.now();
+  if (now - lastHlsErrorAt < HLS_ERROR_COOLDOWN_MS) return;
+  lastHlsErrorAt = now;
+  hlsErrorCount += 1;
+  if (hlsErrorCount > HLS_ERROR_MAX) {
+    setStatus('Erreur HLS persistante. Reessaie dans quelques secondes.', true);
+    return;
+  }
+  const resumeAt = Math.max(getGlobalTime() - 0.5, 0);
+  setStatus('Lecture interrompue, reprise en cours...', true);
+  playerVideo.pause();
+  setSeekHold(resumeAt);
+  scheduleRestart(resumeAt);
+  if (DEBUG_SEEK) {
+    debugSeekLog('[hls] recover', { reason: reason, resumeAt: resumeAt });
+  }
 }
 function seekFromPointer(evt, preview){
   const duration = getDuration();
