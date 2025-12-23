@@ -1,7 +1,7 @@
 version: "3.9"
 
 x-acecinema-image: &acecinema-image
-  image: rangedace/acecinema:0.5.4
+  image: rangedace/acecinema:${ACE_VERSION:-0.5.4}
 
 services:
   app1:
@@ -21,7 +21,7 @@ services:
       APP_SECRET: change-me
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: changeme-admin
-      IMAGE_TAG: "rangedace/acecinema:0.5.4"
+      IMAGE_TAG: "${ACE_VERSION:-0.5.4}"
       MEDIA_ROOT: /mnt/media
     ports:
       - "8081:8080"
@@ -52,7 +52,7 @@ services:
       APP_SECRET: change-me
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: changeme-admin
-      IMAGE_TAG: "rangedace/acecinema:0.5.4"
+      IMAGE_TAG: "${ACE_VERSION:-0.5.4}"
       MEDIA_ROOT: /mnt/media
     ports:
       - "8082:8080"
@@ -83,7 +83,7 @@ services:
       APP_SECRET: change-me
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: changeme-admin
-      IMAGE_TAG: "rangedace/acecinema:0.5.4"
+      IMAGE_TAG: "${ACE_VERSION:-0.5.4}"
       MEDIA_ROOT: /mnt/media
     ports:
       - "8083:8080"
