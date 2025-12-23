@@ -930,6 +930,14 @@ func handleHLSFile(mgr *hlsManager) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		if strings.HasSuffix(clean, ".m3u8") {
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		} else if strings.HasSuffix(clean, ".ts") {
+			w.Header().Set("Content-Type", "video/mp2t")
+		}
 		http.ServeFile(w, r, full)
 	}
 }
@@ -4188,10 +4196,10 @@ async function startTranscode(url, sessionId, startAt, status){
   }
   if (window.Hls && Hls.isSupported()) {
     hls = new Hls({
-      maxBufferLength: 180,
-      maxMaxBufferLength: 360,
-      backBufferLength: 90,
-      maxBufferSize: 256 * 1000 * 1000
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      backBufferLength: 15,
+      maxBufferSize: 60 * 1000 * 1000
     });
     hls.on(Hls.Events.FRAG_BUFFERED, () => {
       tryAutoPlay();
@@ -4225,14 +4233,23 @@ async function startTranscode(url, sessionId, startAt, status){
     hls.on(Hls.Events.ERROR, (event, data) => {
       console.error('hls error', data);
       const code = data && data.response ? data.response.code : 0;
+      const details = data && data.details ? data.details : '';
+      if (details === 'bufferFullError' && hls) {
+        try {
+          hls.stopLoad();
+          hls.recoverMediaError();
+          hls.startLoad(playerVideo.currentTime || 0);
+        } catch (e) {}
+        return;
+      }
       const isServerErr = code >= 500;
       const isNet = data && data.type === Hls.ErrorTypes.NETWORK_ERROR;
       const isMedia = data && data.type === Hls.ErrorTypes.MEDIA_ERROR;
       if (isServerErr || isNet || isMedia) {
-        recoverFromHlsError(data.details || data.type || code);
+        recoverFromHlsError(details || data.type || code);
       }
       if (data && data.fatal) {
-        setStatus('HLS failed: ' + (data.details || data.type), true);
+        setStatus('HLS failed: ' + (details || data.type), true);
       }
     });
     hls.loadSource(url);
@@ -4437,6 +4454,10 @@ function scheduleRestart(target) {
 }
 function recoverFromHlsError(reason) {
   if (currentStreamMode !== 'hls' || !currentMediaId) return;
+  if (hls) {
+    try { hls.stopLoad(); } catch (e) {}
+    try { hls.detachMedia(); } catch (e) {}
+  }
   const now = Date.now();
   if (now - lastHlsErrorAt < HLS_ERROR_COOLDOWN_MS) return;
   lastHlsErrorAt = now;
