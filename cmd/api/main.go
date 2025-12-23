@@ -1672,11 +1672,6 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       border-color: rgba(99, 102, 241, 0.35);
       box-shadow: 0 10px 30px rgba(99, 102, 241, 0.15);
     }
-    .sidebar-footer {
-      margin-top: auto;
-      color: var(--text-muted);
-      font-size: 12px;
-    }
     .main {
       flex: 1;
       padding: 24px 28px 32px;
@@ -2474,7 +2469,6 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
           <span>Parametres</span>
         </button>
       </div>
-      <div class="sidebar-footer">Build: `+buildVersion+`</div>
     </aside>
     <main class="main">
       <div class="topbar">
