@@ -2729,6 +2729,7 @@ const avatarMenu = document.getElementById('avatarMenu');
 const avatarGrid = document.getElementById('avatarGrid');
 const searchInput = document.getElementById('searchInput');
 const sidebarToggle = document.getElementById('sidebarToggle');
+const sidebar = document.getElementById('sidebar');
 const navHome = document.getElementById('navHome');
 const navMovies = document.getElementById('navMovies');
 const navSeries = document.getElementById('navSeries');
@@ -2747,6 +2748,15 @@ function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
   avatarWrap.classList.toggle('hidden', !isAuthed);
+  if (sidebar) {
+    sidebar.classList.toggle('hidden', !isAuthed);
+  }
+  if (navList) {
+    navList.classList.add('hidden');
+  }
+  if (heroAdd) {
+    heroAdd.classList.add('hidden');
+  }
   if (searchInput) {
     searchInput.disabled = !isAuthed;
     if (!isAuthed) {
