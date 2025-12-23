@@ -42,8 +42,6 @@ type config struct {
 	Replication int
 }
 
-var buildVersion = envDefault("IMAGE_TAG", envDefault("BUILD_VERSION", "dev"))
-
 type hlsSession struct {
 	id         string
 	userID     string
