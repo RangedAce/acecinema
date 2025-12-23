@@ -2323,6 +2323,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       width: 52px;
       height: 52px;
       position: relative;
+      transform-origin: 50% 50%;
       animation: spinner-rotate 1.1s linear infinite;
     }
     .spinner span {
@@ -2333,7 +2334,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       background: var(--accent);
       top: 50%;
       left: 50%;
-      transform: rotate(calc(var(--i) * 45deg)) translate(18px);
+      transform: translate(-50%, -50%) rotate(calc(var(--i) * 45deg)) translate(18px);
       opacity: calc(0.2 + (var(--i) / 12));
     }
     @keyframes spinner-rotate {
@@ -2785,6 +2786,7 @@ const avatarGrid = document.getElementById('avatarGrid');
 const searchInput = document.getElementById('searchInput');
 const sidebarToggle = document.getElementById('sidebarToggle');
 const sidebar = document.getElementById('sidebar');
+const topbar = document.querySelector('.topbar');
 const navHome = document.getElementById('navHome');
 const navMovies = document.getElementById('navMovies');
 const navSeries = document.getElementById('navSeries');
@@ -2805,6 +2807,9 @@ function setAuthed(isAuthed) {
   avatarWrap.classList.toggle('hidden', !isAuthed);
   if (sidebar) {
     sidebar.classList.toggle('hidden', !isAuthed);
+  }
+  if (topbar) {
+    topbar.classList.toggle('hidden', !isAuthed);
   }
   if (navList) {
     navList.classList.add('hidden');
