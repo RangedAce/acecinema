@@ -695,6 +695,40 @@ func (s *Service) tmdbMovieCredits(id int) (map[string]string, error) {
 	return meta, nil
 }
 
+func (s *Service) tmdbMovieSimilar(id int) ([]int, error) {
+	endpoint := fmt.Sprintf("https://api.themoviedb.org/3/movie/%d/similar", id)
+	params := url.Values{}
+	params.Set("api_key", s.tmdbKey)
+	params.Set("language", "fr-FR")
+	reqURL := endpoint + "?" + params.Encode()
+	body, err := getJSON(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Results []struct {
+			ID int `json:"id"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0, len(out.Results))
+	for _, r := range out.Results {
+		if r.ID > 0 {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Service) SimilarTmdbIDs(ctx context.Context, tmdbID int) ([]int, error) {
+	if s.tmdbKey == "" {
+		return []int{}, nil
+	}
+	return s.tmdbMovieSimilar(tmdbID)
+}
+
 func (s *Service) DebugTmdb(title string, year int, imdbID string) (map[string]interface{}, error) {
 	if s.tmdbKey == "" {
 		return nil, fmt.Errorf("tmdb key missing")

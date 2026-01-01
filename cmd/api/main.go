@@ -159,6 +159,7 @@ func main() {
 		r.Get("/{id}/assets", handleGetAssets(mediaSvc))
 		r.Get("/{id}/info", handleMediaInfo(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 		r.Get("/{id}/tracks", handleAudioTracks(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
+		r.Get("/{id}/similar", handleSimilar(mediaSvc))
 	})
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
@@ -414,6 +415,37 @@ func handleGetAssets(svc *media.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, assets)
+	}
+}
+
+func handleSimilar(svc *media.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			errorJSON(w, http.StatusBadRequest, "id required")
+			return
+		}
+		item, err := svc.Get(r.Context(), id)
+		if errors.Is(err, media.ErrNotFound) {
+			errorJSON(w, http.StatusNotFound, "not found")
+			return
+		}
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		meta := item.Metadata
+		tmdbID, _ := strconv.Atoi(strings.TrimSpace(meta["tmdb_id"]))
+		if tmdbID == 0 {
+			writeJSON(w, http.StatusOK, []int{})
+			return
+		}
+		ids, err := svc.SimilarTmdbIDs(r.Context(), tmdbID)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ids)
 	}
 }
 
@@ -2809,6 +2841,7 @@ let heroIndex = 0;
 let heroTimer = null;
 let activeCategory = 'all';
 let currentUser = null;
+let similarRequestId = 0;
 function setAuthed(isAuthed) {
   authPanel.classList.toggle('hidden', isAuthed);
   appShell.classList.toggle('hidden', !isAuthed);
@@ -3073,18 +3106,55 @@ function buildCastRow(cast) {
     detailsCast.appendChild(card);
   });
 }
-function buildSimilarRow(current) {
+async function buildSimilarRow(current) {
   detailsSimilar.innerHTML = '';
   if (!current) return;
-  const currentGenres = new Set(parseJSONList((current.metadata || {}).genres_json).map(g => String(g).toLowerCase()));
-  const candidates = mediaCache.filter(m => m.id !== current.id);
-  let list = candidates;
-  if (currentGenres.size > 0) {
-    list = candidates.filter(m => {
-      const genres = parseJSONList((m.metadata || {}).genres_json).map(g => String(g).toLowerCase());
-      return genres.some(g => currentGenres.has(g));
-    });
+  const reqId = ++similarRequestId;
+  const loading = document.createElement('div');
+  loading.className = 'meta';
+  loading.textContent = 'Chargement...';
+  detailsSimilar.appendChild(loading);
+  let list = [];
+  try {
+    const res = await fetch('/media/' + current.id + '/similar', { headers: { Authorization: 'Bearer ' + access } });
+    let ids = [];
+    if (res.ok) {
+      const payload = await res.json();
+      if (Array.isArray(payload)) {
+        ids = payload.map(id => String(id));
+      }
+    }
+    if (reqId !== similarRequestId) return;
+    if (ids.length > 0) {
+      const byTmdb = new Map();
+      mediaCache.forEach(m => {
+        const tmdbID = (m.metadata || {}).tmdb_id;
+        if (tmdbID) {
+          byTmdb.set(String(tmdbID), m);
+        }
+      });
+      ids.forEach(id => {
+        const match = byTmdb.get(id);
+        if (match && match.id !== current.id) {
+          list.push(match);
+        }
+      });
+    }
+  } catch (err) {
+    console.error('similar load failed', err);
   }
+  if (reqId !== similarRequestId) return;
+  if (list.length === 0) {
+    const currentGenres = new Set(parseJSONList((current.metadata || {}).genres_json).map(g => String(g).toLowerCase()));
+    const candidates = mediaCache.filter(m => m.id !== current.id);
+    if (currentGenres.size > 0) {
+      list = candidates.filter(m => {
+        const genres = parseJSONList((m.metadata || {}).genres_json).map(g => String(g).toLowerCase());
+        return genres.some(g => currentGenres.has(g));
+      });
+    }
+  }
+  detailsSimilar.innerHTML = '';
   if (list.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'meta';
@@ -3125,7 +3195,7 @@ async function openDetails(item) {
   detailsStudios.textContent = studios.length ? studios.join(', ') : '-';
   buildGenresChips(parseJSONList(meta.genres_json));
   buildCastRow(parseJSONList(meta.cast_json));
-  buildSimilarRow(item);
+  await buildSimilarRow(item);
   detailsPlay.onclick = () => {
     closeDetails();
     play(item.id, titleText, item.progress_ms || 0);
