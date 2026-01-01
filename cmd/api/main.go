@@ -3325,11 +3325,14 @@ function startHeroCarousel(list) {
     }, 350);
   }, 7000);
 }
-function renderHome(list) {
+function renderHome(list, opts) {
+  const updateHeroNow = !opts || opts.updateHero !== false;
   mediaGrid.innerHTML = '';
   recentRow.innerHTML = '';
   if (!Array.isArray(list) || list.length === 0) {
-    startHeroCarousel([]);
+    if (updateHeroNow) {
+      startHeroCarousel([]);
+    }
     setStatus('Aucun media trouve.', false);
     return;
   }
@@ -3338,7 +3341,9 @@ function renderHome(list) {
     const tb = Date.parse(b.created_at || '') || 0;
     return tb - ta;
   });
-  startHeroCarousel(sorted);
+  if (updateHeroNow) {
+    startHeroCarousel(sorted);
+  }
   sorted.slice(0, 12).forEach(m => recentRow.appendChild(createMediaCard(m)));
   sorted.forEach(m => mediaGrid.appendChild(createMediaCard(m)));
 }
@@ -3375,7 +3380,7 @@ function renderContinue(list) {
 function applySearch() {
   const q = searchQuery.trim().toLowerCase();
   const filtered = mediaCache.filter(m => matchesQuery(m, q)).filter(matchesType);
-  renderHome(filtered);
+  renderHome(filtered, { updateHero: false });
   const cont = continueItems
     .map(entry => Object.assign({}, entry.item || {}, {
       progress_ms: entry.position_ms || 0,
