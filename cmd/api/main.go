@@ -25,6 +25,7 @@ import (
 
 	"acecinema/internal/auth"
 	"acecinema/internal/db"
+	"acecinema/internal/featured"
 	"acecinema/internal/media"
 )
 
@@ -40,6 +41,7 @@ type config struct {
 	Keyspace    string
 	Consistency string
 	Replication int
+	Featured    featured.Config
 }
 
 type hlsSession struct {
@@ -82,6 +84,7 @@ func loadConfig() (config, error) {
 		Keyspace:    envDefault("SCYLLA_KEYSPACE", "acecinema"),
 		Consistency: envDefault("SCYLLA_CONSISTENCY", "QUORUM"),
 		Replication: envDefaultInt("SCYLLA_RF", 3),
+		Featured:    featured.LoadConfigFromEnv(),
 	}
 	if cfg.AppSecret == "" {
 		return cfg, fmt.Errorf("APP_SECRET is required")
@@ -130,6 +133,7 @@ func main() {
 
 	authSvc := auth.NewService(cfg.AppSecret)
 	mediaSvc := media.NewService(session, cfg.Keyspace, cfg.MediaRoot, cfg.TmdbKey)
+	featuredSvc := featured.NewService(session, cfg.Keyspace, cfg.Featured)
 	hlsMgr := newHlsManager()
 
 	r := chi.NewRouter()
@@ -160,6 +164,12 @@ func main() {
 		r.Get("/{id}/info", handleMediaInfo(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 		r.Get("/{id}/tracks", handleAudioTracks(mediaSvc, session, cfg.Keyspace, cfg.MediaRoot))
 		r.Get("/{id}/similar", handleSimilar(mediaSvc))
+	})
+
+	r.Route("/api/featured", func(r chi.Router) {
+		r.Use(authSvc.RequireAuth)
+		r.Get("/items", handleFeaturedItems(featuredSvc))
+		r.Get("/config", handleFeaturedConfig(featuredSvc))
 	})
 
 	r.With(authSvc.RequireAuth).Put("/progress", handleUpdateProgress(mediaSvc))
@@ -446,6 +456,31 @@ func handleSimilar(svc *media.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, ids)
+	}
+}
+
+func handleFeaturedItems(svc *featured.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := auth.ClaimsFromContext(r.Context())
+		if claims == nil || claims.UserID == "" {
+			errorJSON(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		items, cfg, err := svc.ItemsForUser(r.Context(), claims.UserID, time.Now())
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, featured.ItemsResponse{
+			Items:  items,
+			Config: cfg,
+		})
+	}
+}
+
+func handleFeaturedConfig(svc *featured.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, svc.Config().Public())
 	}
 }
 
@@ -1897,7 +1932,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .section { display: flex; flex-direction: column; gap: 14px; }
     .hero {
       position: relative;
-      min-height: 280px;
+      min-height: var(--hero-height, 280px);
+      width: 100%;
       border-radius: 0;
       overflow: hidden;
       background: var(--bg-primary);
@@ -1921,6 +1957,17 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       position: absolute;
       inset: 0;
       background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(20, 20, 20, 0.8) 60%, #141414 100%);
+    }
+    .hero.loading::before {
+      background-image: linear-gradient(110deg, rgba(255,255,255,0.04) 8%, rgba(255,255,255,0.12) 18%, rgba(255,255,255,0.04) 33%);
+      background-size: 200% 100%;
+      background-position: 200% 0;
+      animation: hero-sheen 1.6s linear infinite;
+      opacity: 0.25;
+    }
+    @keyframes hero-sheen {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
     }
     .hero-content {
       position: relative;
@@ -2599,8 +2646,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
               <div id="heroTitle" class="hero-title">Bibliotheque AceCinema</div>
               <div id="heroDesc" class="hero-desc">Selection auto de la bibliotheque locale pour une lecture immediate.</div>
               <div class="hero-actions">
-                <button id="heroPlay">Lecture</button>
-                <button id="heroAdd" class="secondary">Ma liste</button>
+                <button id="heroPlay">Regarder</button>
+                <button id="heroDetails" class="secondary">Details</button>
               </div>
             </div>
           </div>
@@ -2797,7 +2844,7 @@ const heroTitle = document.getElementById('heroTitle');
 const heroDesc = document.getElementById('heroDesc');
 const heroMeta = document.getElementById('heroMeta');
 const heroPlay = document.getElementById('heroPlay');
-const heroAdd = document.getElementById('heroAdd');
+const heroDetails = document.getElementById('heroDetails');
 const detailsOverlay = document.getElementById('detailsOverlay');
 const detailsTitle = document.getElementById('detailsTitle');
 const detailsOriginal = document.getElementById('detailsOriginal');
@@ -2852,6 +2899,22 @@ let searchDebounce = null;
 let heroItems = [];
 let heroIndex = 0;
 let heroTimer = null;
+let heroManagedByFeatured = false;
+let heroConfig = {
+  autoplay: true,
+  autoplayIntervalMs: 7000,
+  loop: true,
+  showOverview: true,
+  showRatings: true,
+  height: '',
+  tvLayout: false,
+  hideOnTvLayout: false
+};
+let heroPaused = false;
+let heroHoverPaused = false;
+let heroVisibilityPaused = false;
+const FEATURED_CACHE_KEY = 'acecinema.featured.hero.v1';
+const FEATURED_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 let activeCategory = 'all';
 let currentUser = null;
 let similarRequestId = 0;
@@ -2867,9 +2930,6 @@ function setAuthed(isAuthed) {
   }
   if (navList) {
     navList.classList.add('hidden');
-  }
-  if (heroAdd) {
-    heroAdd.classList.add('hidden');
   }
   if (isAuthed) {
     startSessionTimers();
@@ -2888,6 +2948,7 @@ function setAuthed(isAuthed) {
     heroTimer = null;
     heroItems = [];
     heroIndex = 0;
+    heroManagedByFeatured = false;
   }
   if (access) {
     console.log('token:', access);
@@ -3406,31 +3467,190 @@ function createMediaCard(m, options) {
   el.addEventListener('click', () => openDetails(m));
   return el;
 }
+function normalizeFeaturedItem(item) {
+  if (!item) return null;
+  if (item.images) return item;
+  return mapMediaToFeatured(item);
+}
+function mapMediaToFeatured(m) {
+  const meta = m.metadata || {};
+  const titleText = getDisplayTitle(m);
+  const yearText = getDisplayYear(m);
+  const yearVal = parseInt(yearText || '0', 10) || 0;
+  return {
+    id: m.id,
+    type: m.type || meta.type || '',
+    title: titleText,
+    overview: meta.plot || meta.overview || '',
+    year: yearVal,
+    runtimeMinutes: parseInt(meta.runtime || '0', 10) || 0,
+    genres: parseJSONList(meta.genres_json),
+    communityRating: parseFloat(meta.rating || meta.vote_average || '0') || 0,
+    criticRating: parseInt(meta.critic_rating || meta.metacritic || '0', 10) || 0,
+    parentalRating: meta.parental_rating || meta.certification || meta.mpaa || '',
+    isPlayed: (m.progress_ms || 0) > 0,
+    images: {
+      backdrop: m.backdrop_url || '',
+      logo: meta.logo_url || '',
+      primary: m.poster_url || ''
+    },
+    actions: {
+      playUrl: '/stream/session?mediaId=' + encodeURIComponent(m.id),
+      detailsUrl: '/media/' + encodeURIComponent(m.id)
+    },
+    badges: buildBadges(m)
+  };
+}
+function formatFeaturedRating(item) {
+  if (!item) return '';
+  const parts = [];
+  if (item.communityRating && item.communityRating > 0) {
+    parts.push('TMDB ' + item.communityRating.toFixed(1));
+  }
+  if (item.criticRating && item.criticRating > 0) {
+    parts.push('Critique ' + item.criticRating);
+  }
+  return parts.join(' ');
+}
+function getHeroImage(item) {
+  if (!item || !item.images) return '';
+  return item.images.backdrop || item.images.primary || '';
+}
+function setHeroLoading(isLoading) {
+  if (!hero) return;
+  hero.classList.toggle('loading', !!isLoading);
+  if (isLoading && heroItems.length === 0) {
+    heroMeta.textContent = 'Chargement';
+    heroTitle.textContent = 'En vedette';
+    heroDesc.textContent = 'Preparation des recommandations...';
+    heroPlay.disabled = true;
+    if (heroDetails) heroDetails.disabled = true;
+  }
+}
+function applyHeroConfig(cfg) {
+  const ui = (cfg && cfg.ui) ? cfg.ui : {};
+  heroConfig.autoplay = ui.autoplay !== false;
+  heroConfig.autoplayIntervalMs = parseInt(ui.autoplayIntervalMs || heroConfig.autoplayIntervalMs, 10) || heroConfig.autoplayIntervalMs;
+  heroConfig.loop = ui.loop !== false;
+  heroConfig.showOverview = ui.showOverview !== false;
+  heroConfig.showRatings = ui.showRatings !== false;
+  heroConfig.height = (ui.height || '').trim();
+  heroConfig.tvLayout = !!ui.tvLayout;
+  heroConfig.hideOnTvLayout = !!ui.hideOnTvLayout;
+  if (heroConfig.height) {
+    hero.style.setProperty('--hero-height', heroConfig.height);
+  } else {
+    hero.style.removeProperty('--hero-height');
+  }
+  if (heroDesc) {
+    heroDesc.classList.toggle('hidden', !heroConfig.showOverview);
+  }
+  document.body.classList.toggle('tv-layout', heroConfig.tvLayout);
+  if (heroConfig.tvLayout && heroConfig.hideOnTvLayout) {
+    hero.classList.add('hidden');
+  } else {
+    hero.classList.remove('hidden');
+  }
+}
+async function openHeroDetails(item) {
+  if (!item) return;
+  const found = mediaCache.find(m => m.id === item.id);
+  if (found) {
+    openDetails(found);
+    return;
+  }
+  if (!access) return;
+  try {
+    const res = await fetch('/media/' + item.id, { headers: { Authorization: 'Bearer ' + access } });
+    if (!res.ok) return;
+    const data = await res.json();
+    openDetails(data);
+  } catch (err) {
+    console.error('hero details failed', err);
+  }
+}
+function preloadHeroImage(item) {
+  const src = getHeroImage(item);
+  if (!src) return;
+  const img = new Image();
+  img.src = src;
+}
+function stopHeroAutoplay() {
+  if (heroTimer) {
+    clearInterval(heroTimer);
+    heroTimer = null;
+  }
+}
+function startHeroAutoplay() {
+  stopHeroAutoplay();
+  if (!heroConfig.autoplay || heroItems.length < 2) {
+    return;
+  }
+  heroPaused = false;
+  heroTimer = setInterval(() => {
+    if (heroItems.length < 2) return;
+    let next = heroIndex + 1;
+    if (next >= heroItems.length) {
+      if (!heroConfig.loop) {
+        stopHeroAutoplay();
+        return;
+      }
+      next = 0;
+    }
+    heroIndex = next;
+    hero.classList.add('fade');
+    setTimeout(() => {
+      updateHero(heroItems[heroIndex]);
+      hero.classList.remove('fade');
+    }, 350);
+    preloadHeroImage(heroItems[(heroIndex + 1) % heroItems.length]);
+  }, heroConfig.autoplayIntervalMs);
+}
+function pauseHeroAutoplay(reason) {
+  stopHeroAutoplay();
+  heroPaused = true;
+  if (reason === 'hover') heroHoverPaused = true;
+  if (reason === 'visibility') heroVisibilityPaused = true;
+}
+function resumeHeroAutoplay(reason) {
+  if (reason === 'hover') heroHoverPaused = false;
+  if (reason === 'visibility') heroVisibilityPaused = false;
+  if (heroHoverPaused || heroVisibilityPaused) return;
+  heroPaused = false;
+  if (heroConfig.autoplay && heroItems.length > 1) {
+    startHeroAutoplay();
+  }
+}
 function updateHero(item) {
-  if (!item) {
+  const normalized = normalizeFeaturedItem(item);
+  if (!normalized) {
     hero.style.setProperty('--hero-image', 'none');
     heroTitle.textContent = 'Bibliotheque AceCinema';
     heroDesc.textContent = 'Selection auto de la bibliotheque locale pour une lecture immediate.';
     heroMeta.textContent = 'A la une';
     heroPlay.disabled = true;
+    if (heroDetails) heroDetails.disabled = true;
     hero.classList.remove('slide');
     return;
   }
-  const titleText = getDisplayTitle(item);
-  const yearText = getDisplayYear(item);
-  const meta = item.metadata || {};
-  const ratingLabel = formatRating(meta);
-  const plot = meta.plot || meta.overview || '';
-  const backdrop = item.backdrop_url || item.poster_url || '';
+  const titleText = normalized.title || 'Sans titre';
+  const yearText = normalized.year ? String(normalized.year) : '';
+  const ratingLabel = heroConfig.showRatings ? formatFeaturedRating(normalized) : '';
   const metaParts = [];
   if (yearText) metaParts.push(yearText);
-  if (ratingLabel) metaParts.push('TMDB ' + ratingLabel);
-  hero.style.setProperty('--hero-image', backdrop ? 'url(' + backdrop + ')' : 'none');
-  heroTitle.textContent = titleText;
-  heroDesc.textContent = plot || 'Lecture disponible en streaming direct.';
+  if (ratingLabel) metaParts.push(ratingLabel);
   heroMeta.textContent = metaParts.length ? metaParts.join(' | ') : 'A la une';
+  heroTitle.textContent = titleText;
+  heroDesc.textContent = normalized.overview || 'Lecture disponible en streaming direct.';
+  heroDesc.classList.toggle('hidden', !heroConfig.showOverview);
+  const backdrop = getHeroImage(normalized);
+  hero.style.setProperty('--hero-image', backdrop ? 'url(' + backdrop + ')' : 'none');
   heroPlay.disabled = false;
-  heroPlay.onclick = () => play(item.id, titleText);
+  heroPlay.onclick = () => play(normalized.id, titleText);
+  if (heroDetails) {
+    heroDetails.disabled = false;
+    heroDetails.onclick = () => openHeroDetails(normalized);
+  }
   hero.classList.remove('slide');
   void hero.offsetWidth;
   hero.classList.add('slide');
@@ -3445,37 +3665,28 @@ function shuffleList(list) {
   }
   return arr;
 }
-function startHeroCarousel(list) {
-  if (heroTimer) {
-    clearInterval(heroTimer);
-    heroTimer = null;
-  }
-  heroItems = shuffleList(list).slice(0, 8);
+function startHeroCarousel(list, opts) {
+  stopHeroAutoplay();
+  const normalized = Array.isArray(list) ? list.map(normalizeFeaturedItem).filter(Boolean) : [];
+  const finalList = opts && opts.shuffle ? shuffleList(normalized) : normalized;
+  heroItems = finalList.slice(0, 12);
   heroIndex = 0;
   if (heroItems.length === 0) {
     updateHero(null);
     return;
   }
   updateHero(heroItems[0]);
-  if (heroItems.length < 2) {
-    return;
-  }
-  heroTimer = setInterval(() => {
-    heroIndex = (heroIndex + 1) % heroItems.length;
-    hero.classList.add('fade');
-    setTimeout(() => {
-      updateHero(heroItems[heroIndex]);
-      hero.classList.remove('fade');
-    }, 350);
-  }, 7000);
+  preloadHeroImage(heroItems[1] || heroItems[0]);
+  startHeroAutoplay();
 }
 function renderHome(list, opts) {
   const updateHeroNow = !opts || opts.updateHero !== false;
+  const allowHeroUpdate = updateHeroNow && !heroManagedByFeatured;
   mediaGrid.innerHTML = '';
   recentRow.innerHTML = '';
   if (!Array.isArray(list) || list.length === 0) {
-    if (updateHeroNow) {
-      startHeroCarousel([]);
+    if (allowHeroUpdate) {
+      startHeroCarousel([], { shuffle: true });
     }
     setStatus('Aucun media trouve.', false);
     return;
@@ -3486,8 +3697,8 @@ function renderHome(list, opts) {
     const tb = Date.parse(b.created_at || '') || 0;
     return tb - ta;
   });
-  if (updateHeroNow) {
-    startHeroCarousel(sorted);
+  if (allowHeroUpdate) {
+    startHeroCarousel(sorted, { shuffle: true });
   }
   sorted.slice(0, 12).forEach(m => recentRow.appendChild(createMediaCard(m)));
   sorted.forEach(m => mediaGrid.appendChild(createMediaCard(m)));
@@ -3624,7 +3835,87 @@ async function loadMedia() {
   mediaCache = list;
   setStatus('Medias charges: ' + list.length, false);
   await loadContinue();
-  applySearch({ updateHero: true });
+  await loadFeaturedHero(mediaCache);
+  applySearch({ updateHero: !heroManagedByFeatured });
+}
+function readFeaturedCache() {
+  try {
+    const raw = localStorage.getItem(FEATURED_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items)) return null;
+    const savedAt = parseInt(parsed.savedAt || 0, 10) || 0;
+    if (savedAt && Date.now() - savedAt > FEATURED_CACHE_TTL_MS) {
+      return null;
+    }
+    return parsed;
+  } catch (err) {
+    return null;
+  }
+}
+function writeFeaturedCache(payload) {
+  try {
+    const data = {
+      savedAt: Date.now(),
+      items: Array.isArray(payload.items) ? payload.items : [],
+      config: payload.config || null
+    };
+    localStorage.setItem(FEATURED_CACHE_KEY, JSON.stringify(data));
+  } catch (err) {}
+}
+async function loadFeaturedHero(fallbackList) {
+  if (!access) return;
+  setHeroLoading(true);
+  let payload = null;
+  try {
+    const res = await fetch('/api/featured/items', {
+      headers: { Authorization: 'Bearer ' + access },
+      cache: 'no-store'
+    });
+    if (res.status === 401) {
+      logout();
+      setStatus('Session expiree, reconnecte-toi.', true);
+      setHeroLoading(false);
+      return;
+    } else if (res.ok) {
+      payload = await res.json();
+    }
+  } catch (err) {
+    console.error('featured load failed', err);
+  }
+  let items = [];
+  let config = null;
+  if (Array.isArray(payload)) {
+    items = payload;
+  } else if (payload && Array.isArray(payload.items)) {
+    items = payload.items;
+    config = payload.config || null;
+  }
+  if (config) {
+    applyHeroConfig(config);
+  }
+  if (items.length > 0) {
+    heroManagedByFeatured = true;
+    startHeroCarousel(items, { shuffle: false });
+    writeFeaturedCache({ items: items, config: config });
+    setHeroLoading(false);
+    return;
+  }
+  const cached = readFeaturedCache();
+  if (cached && Array.isArray(cached.items) && cached.items.length > 0) {
+    heroManagedByFeatured = true;
+    applyHeroConfig(cached.config || null);
+    startHeroCarousel(cached.items, { shuffle: false });
+    setHeroLoading(false);
+    return;
+  }
+  heroManagedByFeatured = false;
+  if (Array.isArray(fallbackList) && fallbackList.length > 0) {
+    startHeroCarousel(fallbackList, { shuffle: true });
+  } else {
+    updateHero(null);
+  }
+  setHeroLoading(false);
 }
 async function loadContinue() {
   if (!access) { return; }
@@ -3741,6 +4032,8 @@ function logout(){
   mediaCache = [];
   continueItems = [];
   currentUser = null;
+  heroManagedByFeatured = false;
+  stopHeroAutoplay();
   renderHome([]);
   continueSection.classList.add('hidden');
   adminPanel.classList.add('hidden');
@@ -4780,6 +5073,9 @@ document.addEventListener('fullscreenchange', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     maybeSendProgress(true);
+    pauseHeroAutoplay('visibility');
+  } else {
+    resumeHeroAutoplay('visibility');
   }
 });
 window.addEventListener('beforeunload', () => {
@@ -4843,10 +5139,11 @@ if (navList) navList.addEventListener('click', () => {
   loadMedia();
 });
 if (navSettings) navSettings.addEventListener('click', () => { showSettings(); loadSettings(); });
-if (heroAdd) {
-  heroAdd.addEventListener('click', () => {
-    setStatus('Ajoute a la liste (placeholder)', false);
-  });
+if (hero) {
+  hero.addEventListener('mouseenter', () => pauseHeroAutoplay('hover'));
+  hero.addEventListener('mouseleave', () => resumeHeroAutoplay('hover'));
+  hero.addEventListener('focusin', () => pauseHeroAutoplay('hover'));
+  hero.addEventListener('focusout', () => resumeHeroAutoplay('hover'));
 }
 document.getElementById('loginBtn').addEventListener('click', login);
 document.getElementById('refreshBtn').addEventListener('click', refresh);
