@@ -1625,35 +1625,43 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
   <title>AceCinema</title>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.12"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Poppins:wght@600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Bebas+Neue&display=swap');
     :root {
-      --bg-primary: #0A0E27;
-      --bg-secondary: #161B33;
-      --accent: #6366F1;
-      --accent-2: #EC4899;
-      --text: #F3F4F6;
-      --text-muted: #9CA3AF;
-      --success: #10B981;
-      --error: #EF4444;
-      --radius-card: 12px;
-      --radius-btn: 6px;
-      --glass: rgba(22, 27, 51, 0.8);
-      --shadow-accent: 0 10px 40px rgba(99, 102, 241, 0.3);
+      --bg-primary: #141414;
+      --bg-secondary: #1a1a1a;
+      --bg-card: #2f2f2f;
+      --accent: #e50914;
+      --accent-2: #f40612;
+      --accent-dark: #b20710;
+      --text: #ffffff;
+      --text-main: #ffffff;
+      --text-muted: #b3b3b3;
+      --text-dark: #808080;
+      --success: #46d369;
+      --error: #e50914;
+      --border: rgba(255, 255, 255, 0.15);
+      --overlay: rgba(0, 0, 0, 0.7);
+      --radius-card: 4px;
+      --radius-btn: 4px;
+      --glass: rgba(0, 0, 0, 0.7);
+      --shadow-accent: 0 10px 40px rgba(229, 9, 20, 0.3);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       color: var(--text);
-      background: linear-gradient(135deg, #0A0E27 0%, #161B33 100%);
-      font-family: "Inter", "Noto Sans", system-ui, sans-serif;
+      background: var(--bg-primary);
+      font-family: "Montserrat", "Helvetica Neue", Arial, sans-serif;
       font-size: 15px;
       overflow-x: hidden;
     }
     h1, h2, .logo, .brand {
-      font-family: "Poppins", "Inter", sans-serif;
+      font-family: "Bebas Neue", "Montserrat", sans-serif;
+      font-weight: 700;
+      letter-spacing: 1px;
     }
     code, .mono {
-      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-family: "Courier New", monospace;
     }
     input, button {
       font-family: inherit;
@@ -1666,8 +1674,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     .sidebar {
       width: 240px;
-      background: rgba(22, 27, 51, 0.95);
-      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--bg-primary);
+      border-right: 1px solid rgba(255, 255, 255, 0.1);
       padding: 24px 18px;
       position: sticky;
       top: 0;
@@ -1689,10 +1697,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     .nav button {
       background: transparent;
-      border: 1px solid transparent;
+      border: none;
+      border-left: 4px solid transparent;
       color: var(--text-muted);
       padding: 10px 12px;
-      border-radius: 10px;
+      border-radius: 4px;
       text-align: left;
       display: flex;
       align-items: center;
@@ -1705,12 +1714,15 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       height: 18px;
       stroke: currentColor;
     }
-    .nav button:hover,
+    .nav button:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.06);
+    }
     .nav button.active {
       color: var(--text);
-      background: rgba(99, 102, 241, 0.16);
-      border-color: rgba(99, 102, 241, 0.35);
-      box-shadow: 0 10px 30px rgba(99, 102, 241, 0.15);
+      background: transparent;
+      border-left-color: var(--accent);
+      padding-left: 8px;
     }
     .main {
       flex: 1;
@@ -1734,9 +1746,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       display: none;
       width: 40px;
       height: 40px;
-      border-radius: 8px;
+      border-radius: 4px;
       border: 1px solid rgba(255, 255, 255, 0.1);
-      background: rgba(22, 27, 51, 0.7);
+      background: #1a1a1a;
       color: var(--text);
       cursor: pointer;
     }
@@ -1747,16 +1759,16 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .search input {
       width: 100%;
       padding: 12px 16px;
-      border-radius: 10px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      background: var(--bg-secondary);
+      border-radius: 4px;
+      border: 1px solid #808080;
+      background: #333333;
       color: var(--text);
-      transition: border 0.2s ease, box-shadow 0.2s ease;
+      transition: border 0.2s ease;
     }
     .search input:focus {
-      border-color: rgba(99, 102, 241, 0.6);
-      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+      border-color: var(--text);
       outline: none;
+      box-shadow: none;
     }
     .avatar-wrap {
       position: relative;
@@ -1798,7 +1810,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       transition: all 0.2s ease;
     }
     .menu button:hover {
-      background: rgba(99, 102, 241, 0.2);
+      background: rgba(229, 9, 20, 0.2);
     }
     .avatar-grid {
       display: flex;
@@ -1814,12 +1826,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       cursor: pointer;
     }
     .panel {
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 16px;
-      background: rgba(22, 27, 51, 0.65);
-      backdrop-filter: blur(10px);
-      box-shadow: 0 20px 50px rgba(10, 14, 39, 0.4);
+      background: var(--bg-secondary);
+      box-shadow: none;
     }
     .auth-panel {
       max-width: 520px;
@@ -1838,17 +1849,17 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     input {
       padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: var(--bg-secondary);
+      border-radius: 4px;
+      border: 1px solid #808080;
+      background: #333333;
       color: var(--text);
       min-width: 220px;
     }
     select {
       padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: var(--bg-secondary);
+      border-radius: 4px;
+      border: 1px solid #808080;
+      background: #333333;
       color: var(--text);
       min-width: 160px;
     }
@@ -1856,20 +1867,24 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       background: var(--accent);
       color: var(--text);
       border: 1px solid transparent;
-      padding: 10px 18px;
+      padding: 12px 24px;
       border-radius: var(--radius-btn);
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: background 0.3s ease;
       font-weight: 600;
     }
     button.secondary {
-      background: transparent;
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(109, 109, 110, 0.7);
+      border: none;
       color: var(--text);
     }
     button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 10px 30px rgba(99, 102, 241, 0.3);
+      background: var(--accent-2);
+      transform: none;
+      box-shadow: none;
+    }
+    button.secondary:hover {
+      background: rgba(109, 109, 110, 0.4);
     }
     button:disabled {
       opacity: 0.5;
@@ -1883,9 +1898,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .hero {
       position: relative;
       min-height: 280px;
-      border-radius: 16px;
+      border-radius: 0;
       overflow: hidden;
-      background: radial-gradient(circle at top, rgba(99, 102, 241, 0.35), transparent 60%), var(--bg-secondary);
+      background: var(--bg-primary);
       display: flex;
       align-items: flex-end;
       transition: background 0.3s ease;
@@ -1905,7 +1920,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       content: "";
       position: absolute;
       inset: 0;
-      background: linear-gradient(180deg, rgba(10, 14, 39, 0.2) 0%, rgba(10, 14, 39, 0.9) 85%);
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(20, 20, 20, 0.8) 60%, #141414 100%);
     }
     .hero-content {
       position: relative;
@@ -1981,7 +1996,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       height: 8px;
     }
     .media-row::-webkit-scrollbar-thumb {
-      background: rgba(99, 102, 241, 0.4);
+      background: rgba(229, 9, 20, 0.55);
       border-radius: 999px;
     }
     .media-row .card {
@@ -1990,14 +2005,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .card {
       border-radius: var(--radius-card);
       overflow: hidden;
-      background: rgba(22, 27, 51, 0.8);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: transparent;
+      border: none;
       position: relative;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      padding: 12px;
-      transition: all 0.2s ease;
+      padding: 12px 8px 10px;
+      transition: transform 0.3s ease;
       cursor: pointer;
     }
     .user-card {
@@ -2018,15 +2033,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       letter-spacing: 0.4px;
     }
     .card:hover {
-      transform: scale(1.03);
-      box-shadow: var(--shadow-accent);
-      border-color: rgba(99, 102, 241, 0.4);
+      transform: scale(1.08);
+      box-shadow: 0 10px 40px rgba(229, 9, 20, 0.35);
     }
     .poster {
       width: 100%;
       aspect-ratio: 2 / 3;
-      background: rgba(22, 27, 51, 0.9);
-      border-radius: 8px;
+      background: #1f1f1f;
+      border-radius: 4px;
       object-fit: cover;
     }
     .card-title {
@@ -2045,18 +2059,18 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       align-items: center;
       justify-content: center;
       padding: 0;
-      background: rgba(99, 102, 241, 0.2);
-      border: 1px solid rgba(99, 102, 241, 0.5);
+      background: var(--accent);
+      border: none;
     }
     .badge {
       position: absolute;
       top: 10px;
       right: 10px;
-      background: rgba(22, 27, 51, 0.8);
+      background: rgba(0, 0, 0, 0.6);
       color: var(--text);
       border: 1px solid rgba(255, 255, 255, 0.15);
       padding: 4px 6px;
-      border-radius: 6px;
+      border-radius: 4px;
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -2065,11 +2079,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       position: absolute;
       top: 10px;
       left: 10px;
-      background: rgba(10, 14, 39, 0.85);
-      color: var(--text-main);
-      border: 1px solid rgba(99, 102, 241, 0.4);
+      background: rgba(0, 0, 0, 0.65);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.2);
       padding: 4px 6px;
-      border-radius: 6px;
+      border-radius: 4px;
       font-size: 10px;
       letter-spacing: 0.4px;
     }
@@ -2081,8 +2095,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       height: 26px;
       border-radius: 999px;
       border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(10, 14, 39, 0.7);
-      color: var(--text-main);
+      background: rgba(0, 0, 0, 0.6);
+      color: var(--text);
       font-size: 14px;
       line-height: 1;
       padding: 0;
@@ -2094,8 +2108,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       transition: all 0.2s ease;
     }
     .card-remove:hover {
-      border-color: rgba(236, 72, 153, 0.6);
-      color: #EC4899;
+      border-color: rgba(229, 9, 20, 0.7);
+      color: var(--accent);
     }
     .progress {
       height: 4px;
@@ -2114,23 +2128,22 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     .details-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(10, 14, 39, 0.7);
+      background: var(--overlay);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 998;
       padding: 24px;
-      backdrop-filter: blur(8px);
     }
     .details-modal {
       width: min(1100px, 95%);
       max-height: 90vh;
       overflow-y: auto;
-      background: var(--glass);
+      background: var(--bg-secondary);
       border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 16px;
+      border-radius: 4px;
       padding: 24px;
-      box-shadow: 0 30px 80px rgba(3, 6, 20, 0.6);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
       display: flex;
       flex-direction: column;
       gap: 20px;
@@ -2151,11 +2164,11 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       margin-top: 4px;
     }
     .details-close {
-      background: rgba(236, 72, 153, 0.2);
-      border: 1px solid rgba(236, 72, 153, 0.5);
+      background: rgba(229, 9, 20, 0.2);
+      border: 1px solid rgba(229, 9, 20, 0.5);
       color: var(--text);
       padding: 8px 12px;
-      border-radius: 8px;
+      border-radius: 4px;
       cursor: pointer;
     }
     .details-body {
@@ -2165,10 +2178,10 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
     }
     .details-poster {
       width: 100%;
-      border-radius: 12px;
+      border-radius: 4px;
       object-fit: cover;
       aspect-ratio: 2 / 3;
-      background: rgba(22, 27, 51, 0.8);
+      background: #1f1f1f;
     }
     .details-meta {
       display: flex;
@@ -2213,8 +2226,8 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       margin-top: 10px;
     }
     .chip {
-      background: rgba(99, 102, 241, 0.2);
-      border: 1px solid rgba(99, 102, 241, 0.4);
+      background: rgba(229, 9, 20, 0.2);
+      border: 1px solid rgba(229, 9, 20, 0.4);
       border-radius: 999px;
       padding: 4px 10px;
       font-size: 11px;
@@ -2228,9 +2241,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       padding-bottom: 8px;
     }
     .cast-card {
-      background: rgba(22, 27, 51, 0.8);
+      background: var(--bg-card);
       border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 12px;
+      border-radius: 8px;
       padding: 10px;
       display: flex;
       flex-direction: column;
@@ -2311,12 +2324,12 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       background: rgba(0, 0, 0, 0.6);
     }
     .player-close {
-      background: rgba(236, 72, 153, 0.2);
+      background: rgba(229, 9, 20, 0.2);
       color: #fff;
-      border: 1px solid rgba(236, 72, 153, 0.5);
+      border: 1px solid rgba(229, 9, 20, 0.5);
       cursor: pointer;
       flex-shrink: 0;
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 6px 10px;
     }
     .player-controls {
@@ -2344,7 +2357,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       align-items: center;
       justify-content: center;
       gap: 12px;
-      background: rgba(10, 14, 39, 0.4);
+      background: rgba(0, 0, 0, 0.55);
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.2s ease;
@@ -2354,7 +2367,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       opacity: 1;
     }
     .player-loading-text {
-      color: var(--text-main);
+      color: var(--text);
       font-size: 12px;
       letter-spacing: 0.4px;
       text-transform: uppercase;
@@ -2388,10 +2401,10 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       align-items: center;
     }
     .player-ctrl {
-      background: rgba(99, 102, 241, 0.2);
+      background: rgba(229, 9, 20, 0.2);
       color: #fff;
-      border: 1px solid rgba(99, 102, 241, 0.6);
-      border-radius: 8px;
+      border: 1px solid rgba(229, 9, 20, 0.6);
+      border-radius: 4px;
       padding: 6px 10px;
       cursor: pointer;
       transition: all 0.2s ease;
@@ -2407,9 +2420,9 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       position: absolute;
       bottom: 18px;
       transform: translateX(-50%);
-      background: rgba(10, 14, 39, 0.9);
+      background: rgba(0, 0, 0, 0.85);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      color: var(--text-main);
+      color: var(--text);
       font-size: 12px;
       padding: 4px 8px;
       border-radius: 6px;
@@ -2432,7 +2445,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       border: none;
       --thumb-size: 14px;
       --track-color: rgba(255, 255, 255, 0.2);
-      --fill-color: #6366F1;
+      --fill-color: #e50914;
       --fill-percent: 0%;
     }
     input[type=range]::-webkit-slider-runnable-track {
@@ -2446,7 +2459,7 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       width: var(--thumb-size);
       height: var(--thumb-size);
       border-radius: 50%;
-      background: #F3F4F6;
+      background: #ffffff;
       border: 1px solid rgba(255, 255, 255, 0.4);
       margin-top: -4px;
     }
@@ -2464,14 +2477,14 @@ func serveUI(w http.ResponseWriter, r *http.Request) {
       width: var(--thumb-size);
       height: var(--thumb-size);
       border-radius: 50%;
-      background: #F3F4F6;
+      background: #ffffff;
       border: 1px solid rgba(255, 255, 255, 0.4);
     }
     .player-controls select {
-      background: rgba(22, 27, 51, 0.8);
+      background: #333333;
       color: #fff;
       border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 8px;
+      border-radius: 4px;
       padding: 6px 8px;
       font-size: 12px;
     }
@@ -3948,7 +3961,7 @@ async function updateUser(id, payload){
   }
   await loadUsers();
 }
-const avatarColors = ['#6366F1', '#EC4899', '#10B981', '#0A0E27', '#161B33', '#9CA3AF'];
+const avatarColors = ['#e50914', '#f40612', '#46d369', '#141414', '#1a1a1a', '#b3b3b3'];
 function isLightColor(hex) {
   const cleaned = hex.replace('#', '');
   if (cleaned.length !== 6) return false;
@@ -3962,7 +3975,7 @@ function applyAvatar(color){
   const chosen = color || localStorage.getItem('avatar_color') || avatarColors[0];
   localStorage.setItem('avatar_color', chosen);
   avatarBtn.style.background = chosen;
-  avatarBtn.style.color = isLightColor(chosen) ? '#0A0E27' : '#F3F4F6';
+  avatarBtn.style.color = isLightColor(chosen) ? '#141414' : '#ffffff';
 }
 function buildAvatarPicker(){
   avatarGrid.innerHTML = '';
