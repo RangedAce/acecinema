@@ -2987,6 +2987,66 @@ function getDisplayYear(m) {
   const meta = m.metadata || {};
   return m.year || meta.year || '';
 }
+function getSourceName(m) {
+  const meta = m.metadata || {};
+  return (meta.source_name || '').toString();
+}
+function qualityScore(m) {
+  const raw = getSourceName(m) || '';
+  const text = raw.toLowerCase();
+  let score = 0;
+  if (text.includes('2160') || text.includes('4k') || text.includes('uhd')) {
+    score += 400;
+  } else if (text.includes('1080')) {
+    score += 300;
+  } else if (text.includes('720')) {
+    score += 200;
+  } else if (text.includes('480')) {
+    score += 100;
+  }
+  if (text.includes('hdr')) {
+    score += 20;
+  }
+  if (text.includes('dolby vision') || text.includes('dovi') || text.includes('dv')) {
+    score += 25;
+  }
+  if (text.includes('10bit') || text.includes('10-bit')) {
+    score += 5;
+  }
+  return score;
+}
+function dedupeMedia(list) {
+  const groups = new Map();
+  list.forEach(m => {
+    const meta = m.metadata || {};
+    const tmdbID = meta.tmdb_id ? String(meta.tmdb_id) : '';
+    const keyBase = tmdbID ? ('tmdb:' + tmdbID) : ('title:' + getDisplayTitle(m).toLowerCase() + ':' + String(getDisplayYear(m)));
+    const key = keyBase + ':' + String(m.type || '');
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(m);
+  });
+  const out = [];
+  groups.forEach(items => {
+    if (items.length === 1) {
+      out.push(items[0]);
+      return;
+    }
+    const shuffled = shuffleList(items);
+    let best = shuffled[0];
+    let bestScore = qualityScore(best);
+    for (let i = 1; i < shuffled.length; i += 1) {
+      const score = qualityScore(shuffled[i]);
+      if (score > bestScore) {
+        best = shuffled[i];
+        bestScore = score;
+      }
+    }
+    out.push(best);
+  });
+  return out;
+}
 function buildBadges(m) {
   const badges = [];
   const title = (m.title || '').toLowerCase();
@@ -3162,7 +3222,8 @@ async function buildSimilarRow(current) {
     detailsSimilar.appendChild(empty);
     return;
   }
-  list.slice(0, 12).forEach(m => {
+  const deduped = dedupeMedia(list);
+  deduped.slice(0, 12).forEach(m => {
     const card = createMediaCard(m);
     addRatingBadge(card, m);
     detailsSimilar.appendChild(card);
@@ -3406,7 +3467,8 @@ function renderHome(list, opts) {
     setStatus('Aucun media trouve.', false);
     return;
   }
-  const sorted = list.slice().sort((a, b) => {
+  const deduped = dedupeMedia(list);
+  const sorted = deduped.slice().sort((a, b) => {
     const ta = Date.parse(a.created_at || '') || 0;
     const tb = Date.parse(b.created_at || '') || 0;
     return tb - ta;

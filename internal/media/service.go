@@ -383,6 +383,7 @@ func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePa
 	nfoTitle, nfoYear, imdbID := readNFO(filePath)
 	updatedTitle := title
 	updatedYear := year
+	sourceName := strings.TrimSpace(filepath.Base(filePath))
 	if nfoTitle != "" {
 		updatedTitle = nfoTitle
 	}
@@ -396,9 +397,16 @@ func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePa
 		}
 	}
 	if s.tmdbKey == "" {
+		meta := map[string]string{}
 		if imdbID != "" {
+			meta["imdb_id"] = imdbID
+		}
+		if sourceName != "" {
+			meta["source_name"] = sourceName
+		}
+		if len(meta) > 0 {
 			if err := s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=? WHERE id=?`, s.keyspace),
-				map[string]string{"imdb_id": imdbID}, mediaID).WithContext(ctx).Exec(); err != nil {
+				meta, mediaID).WithContext(ctx).Exec(); err != nil {
 				return err
 			}
 		}
@@ -429,6 +437,9 @@ func (s *Service) enrichMetadata(ctx context.Context, mediaID gocql.UUID, filePa
 			titleToSet, yearToSet, mediaID).WithContext(ctx).Exec(); err != nil {
 			return err
 		}
+	}
+	if sourceName != "" {
+		meta["source_name"] = sourceName
 	}
 	if poster != "" || backdrop != "" {
 		return s.session.Query(fmt.Sprintf(`UPDATE %s.media_items SET metadata=?, poster_url=?, backdrop_url=? WHERE id=?`, s.keyspace),
