@@ -3963,6 +3963,7 @@ async function play(id, titleText, resumeMs){
   if (!access) { setStatus('Not logged in', true); return; }
   recordActivity();
   currentMediaId = id;
+  lastGoodTimeSec = Math.max(0, (resumeMs || 0) / 1000);
   catalogDuration = 0;
   hlsBaseOffset = 0;
   pendingSeekTime = null;
@@ -4327,6 +4328,7 @@ let isSeeking = false;
 let seekPointerActive = false;
 let pendingSeekTime = null;
 let hlsBaseOffset = 0;
+let lastGoodTimeSec = 0;
 let lastRestartAt = 0;
 let restartTimer = null;
 let queuedRestartTarget = null;
@@ -4531,6 +4533,10 @@ async function startPlayback(mediaId, startAt){
   currentHlsSession = '';
   setPlayerLoading(true, 'Chargement...');
   const startValue = (isFinite(startAt) && startAt > 0) ? startAt : 0;
+  if (startValue > 0) {
+    pendingSeekTime = startValue;
+    lastGoodTimeSec = startValue;
+  }
   const audioIndex = isFinite(currentAudioIndex) ? currentAudioIndex : -1;
   const url = '/stream/session?mediaId=' + encodeURIComponent(mediaId) + '&audio=' + encodeURIComponent(audioIndex) + (startValue > 0 ? ('&start=' + encodeURIComponent(startValue.toFixed(2))) : '');
   const res = await fetch(url,{headers:{Authorization:'Bearer '+access}});
@@ -4910,7 +4916,11 @@ function recoverFromHlsError(reason) {
     setStatus('Erreur HLS persistante. Reessaie dans quelques secondes.', true);
     return;
   }
-  const resumeAt = Math.max(getGlobalTime() - 0.5, 0);
+  const lastGood = isFinite(lastGoodTimeSec) ? lastGoodTimeSec : 0;
+  let resumeAt = Math.max(lastGood - 0.5, 0);
+  if (resumeAt === 0) {
+    resumeAt = Math.max(getGlobalTime() - 0.5, 0);
+  }
   setStatus('Lecture interrompue, reprise en cours...', true);
   setPlayerLoading(true, 'Reconnexion...');
   playerVideo.pause();
@@ -4958,6 +4968,10 @@ function seekFromPointer(evt, preview){
     }
     if (isSeeking) return;
     const duration = getDuration();
+    const globalPos = getGlobalTime();
+    if (isFinite(globalPos) && globalPos >= 0) {
+      lastGoodTimeSec = globalPos;
+    }
     if (!duration) { return; }
     const pos = Math.min(Math.max(getGlobalTime(), 0), duration);
     seekBar.max = duration.toFixed(2);
