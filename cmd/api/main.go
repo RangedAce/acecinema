@@ -3377,10 +3377,11 @@ function renderContinue(list) {
   continueSection.classList.remove('hidden');
   list.forEach(m => continueRow.appendChild(createMediaCard(m, { showRemove: true })));
 }
-function applySearch() {
+function applySearch(opts) {
+  const updateHeroNow = !opts || opts.updateHero !== false;
   const q = searchQuery.trim().toLowerCase();
   const filtered = mediaCache.filter(m => matchesQuery(m, q)).filter(matchesType);
-  renderHome(filtered, { updateHero: false });
+  renderHome(filtered, { updateHero: updateHeroNow });
   const cont = continueItems
     .map(entry => Object.assign({}, entry.item || {}, {
       progress_ms: entry.position_ms || 0,
@@ -3478,7 +3479,7 @@ async function loadMedia() {
   mediaCache = list;
   setStatus('Medias charges: ' + list.length, false);
   await loadContinue();
-  applySearch();
+  applySearch({ updateHero: true });
 }
 async function loadContinue() {
   if (!access) { return; }
@@ -4664,7 +4665,7 @@ if (searchInput) {
       clearTimeout(searchDebounce);
     }
     searchDebounce = setTimeout(() => {
-      applySearch();
+      applySearch({ updateHero: false });
     }, 300);
   });
 }
@@ -4714,12 +4715,6 @@ createUserBtn.addEventListener('click', createUser);
   document.addEventListener(evt, recordActivity, { passive: true });
 });
 playerVideo.addEventListener('play', recordActivity);
-window.addEventListener('pagehide', () => {
-  sessionStorage.removeItem('access_token');
-  sessionStorage.removeItem('refresh_token');
-  access = '';
-  refreshToken = '';
-});
 window.addEventListener('resize', () => {
   updateRangeFill(seekBar);
   updateRangeFill(volumeBar);
